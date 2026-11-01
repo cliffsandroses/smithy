@@ -1,0 +1,8 @@
+#!/bin/sh
+# to-work: send text, links or a file to the work PC (Moosa, 2026-11-02: "find a different way to send data to the work
+# PC automatically"). It goes to a private ntfy channel; the work PC's browser has https://ntfy.sh/<topic> open once
+# (Subscribe) and gets every message, links clickable, files downloadable. The topic name is in ~/.config/to-work/topic.
+#   to-work "text or link"        to-work -f file.pdf        echo text | to-work
+T=$(cat ~/.config/to-work/topic)
+if [ "${1:-}" = -f ]; then curl -s -T "$2" -H "Filename: $(basename "$2")" "https://ntfy.sh/$T" >/dev/null && echo "sent $2"
+else m=${1:-$(cat)}; curl -s -d "$m" "https://ntfy.sh/$T" >/dev/null && echo sent; fi

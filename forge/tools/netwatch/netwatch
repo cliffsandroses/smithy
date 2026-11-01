@@ -104,6 +104,9 @@ def sample():
         import routerwatch; r = routerwatch.run(ntfy); r and print(r)
     except Exception as e: print("routerwatch failed:", type(e).__name__, e, file=sys.stderr)
     try:
+        import backupmap; r = backupmap.run(); r and print(r)
+    except Exception as e: print("backupmap failed:", type(e).__name__, e, file=sys.stderr)
+    try:
         import llmpick; r = llmpick.run(); r and print(r)
     except Exception as e: print("llmpick failed:", type(e).__name__, e, file=sys.stderr)
     try:   # PCAI recordings dropped in EC01/PCAI/inbox from the work PC (pcai-inbox runs on its own, it takes hours)
