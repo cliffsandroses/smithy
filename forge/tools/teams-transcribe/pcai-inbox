@@ -10,17 +10,16 @@ text file in EC01\\PCAI\\inbox, e.g. "Day 5 networking.txt". EC01 sends it to th
   2. screenshots where the screen changes (a new slide, a new window; at most 1 per 20 s, 80 in all), each named by its
      time → EC01/PCAI/screens/<name>/
   3. a transcript on the homelab (faster-whisper, 20-minute pieces) → EC01/PCAI/transcripts/<name>.txt
-  4. a free model with 1M context (FreeLLMAPI, through the laptop's freellm) turns the transcript into the study page's
-     must-remember list, sections and likely questions; the page (with the screenshots at their times) goes into
-     PCAI Tool/_build/source and the search is rebuilt.
+  Study pages are not made here: Moosa writes them with Claude, when and how he says (2026-11-02). `pcai-inbox page <name>`
+  stays for when he asks for a draft.
 The inbox file is renamed .done (or .failed with the reason inside). Videos already downloaded (.mp4 in the inbox) work too.
   pcai-inbox            process the inbox once          pcai-inbox page <name>     redo only the study page
 """
 import base64, glob, html, json, os, re, subprocess, sys, time
 
-EC = os.path.expanduser("~/EC01/PCAI"); INBOX = f"{EC}/inbox"
+EC = os.path.expanduser("~/PCAI-work"); INBOX = os.path.expanduser("~/EC01/PCAI/inbox")   # outputs outside EC01: the work PC (send only) wiped them there on 2026-11-02
 WHISPER = os.path.expanduser("~/.local/share/pcai-whisper")
-TOOL = f"{EC}/PCAI Tool"; SRC = f"{TOOL}/_build/source"
+TOOL = os.path.expanduser("~/EC01/PCAI/PCAI Tool"); SRC = f"{TOOL}/_build/source"
 LAPTOP = "moosa@192.168.10.30"
 
 
@@ -158,9 +157,9 @@ def page(name, s, shots):
 def one(item):
     name = os.path.splitext(os.path.basename(item))[0]
     src = item if item.endswith(".mp4") else open(item).read().strip().split()[0]
-    video = download(src, name); shots = screens(video, name); text = transcribe(video, name)
-    fn = page(name, study(name, text), shots)
-    return f"{name}: {len(shots)} screenshots, page {fn}"
+    video = download(src, name); shots = screens(video, name); transcribe(video, name)
+    # no study page here: Moosa writes those with Claude, when and how he says (2026-11-02)
+    return f"{name}: recording, {len(shots)} screenshots and a transcript ready"
 
 
 def run():
@@ -181,7 +180,7 @@ def run():
 
 if __name__ == "__main__":
     if sys.argv[1:2] == ["page"]:
-        n = sys.argv[2]; v = (glob.glob(f"{EC}/**/{glob.escape(n)}.mp4", recursive=True) or [None])[0]
+        n = sys.argv[2]; v = (glob.glob(os.path.expanduser(f"~/EC01/**/{glob.escape(n)}.mp4"), recursive=True) or [None])[0]
         shots = screens(v, n) if v else sorted(glob.glob(f"{EC}/screens/{n}/*.jpg"))
         print(page(n, study(n, open(f"{EC}/transcripts/{n}.txt").read()), shots))
     else:
