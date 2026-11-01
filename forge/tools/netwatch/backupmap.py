@@ -41,7 +41,7 @@ def backups():
     out = []
     log = open(os.path.expanduser("~/homelab/backup/backup.log")).read().splitlines()
     last = [l for l in log if l in ("OK", "COMPLETED WITH FAILURES")][-1:] or ["?"]
-    fails = sorted({l.strip()[5:] for l in log[-60:] if l.strip().startswith("FAIL")})
+    fails = sorted({l.strip()[5:] for l in log[-60:] if l.strip().startswith("FAIL")} - {"git mirror smithy"} if os.path.exists("/mnt/data/Backups/git-mirrors/smithy.git/refs/remotes/origin") else {l.strip()[5:] for l in log[-60:] if l.strip().startswith("FAIL")})
     sets = sorted(glob.glob(f"{B}/homelab/20*"))
     out.append({"what": "Homelab configs and databases", "where": f"{B}/homelab (backup disk)", "when": "nightly 03:15",
                 "last": os.path.basename(sets[-1]) if sets else "none", "kept": f"{len(sets)} sets", "size": du(f"{B}/homelab"),
@@ -59,6 +59,39 @@ def backups():
     out.append({"what": "Git mirrors (smithy, Soma)", "where": f"{B}/git-mirrors", "when": "on every push", "last": "",
                 "kept": "", "size": du(f"{B}/git-mirrors"), "ok": "git mirror smithy" not in " ".join(fails), "note": ""})
     return out
+
+
+def diagram(bks, folders):
+    """The whole flow as a picture: devices ⇄ Syncthing ⇄ homelab → backup disk → laptop / MEGA."""
+    ok = {b["what"][:14]: b["ok"] for b in bks}
+    phone_ec = all(d["state"] != "notSharing" for f in folders for d in f["devices"] if d["name"] == "Phone" and f["label"] == "EC01")
+    G, R, A = "#3DDC97", "#FF4D6D", "#00E5FF"
+    def box(x, y, w, h, title, sub, col=A):
+        return (f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="14" fill="#0d0f14" stroke="{col}" stroke-opacity=".55"/>'
+                f'<text x="{x + 14}" y="{y + 26}" fill="#F4F7FF" font-size="15" font-weight="600">{title}</text>'
+                + "".join(f'<text x="{x + 14}" y="{y + 48 + 17 * i}" fill="#C3CBE2" font-size="12.5">{t}</text>' for i, t in enumerate(sub)))
+    def arrow(x1, y1, x2, y2, label, col=A, both=False):
+        mid = ((x1 + x2) / 2, (y1 + y2) / 2 - 8)
+        return (f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{col}" stroke-width="2" marker-end="url(#h{col[1:]})"'
+                f'{f' marker-start="url(#t{col[1:]})"' if both else ""}/><text x="{mid[0]}" y="{mid[1]}" fill="{col}" font-size="12" text-anchor="middle">{label}</text>')
+    defs = "".join(f'<marker id="h{c[1:]}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="{c}"/></marker>'
+                   f'<marker id="t{c[1:]}" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10,0L0,5L10,10z" fill="{c}"/></marker>' for c in (A, G, R))
+    return f'''<svg viewBox="0 0 1060 470" width="100%" role="img" aria-label="How your data is synced and backed up" style="font-family:Urbanist,sans-serif">
+<defs>{defs}</defs>
+{box(10, 20, 200, 92, "Phone", ["Syncthing: Backups, Aedon", "EC01: " + ("synced" if phone_ec else "not accepted yet")], G if phone_ec else R)}
+{box(10, 140, 200, 92, "Laptop", ["Syncthing: Axon, Projects,", "Claude, EC01, EC01-work"])}
+{box(10, 260, 200, 92, "Work PC", ["Syncthing: EC01 (send only:", "it sends, never receives)"])}
+{box(360, 120, 260, 150, "Homelab VM", ["Every synced folder lives here", "Apps: Immich, Nextcloud, Soma,", "Jellyfin config, AdGuard …", "Version history on every folder", "(old + deleted files kept 1 year)"])}
+{arrow(212, 66, 358, 160, "Syncthing", A, True)}{arrow(212, 186, 358, 190, "Syncthing", A, True)}{arrow(212, 306, 358, 230, "Syncthing (to it only)", A)}
+{box(760, 20, 290, 112, "Backup disk  /mnt/data", ["Configs + databases (7 nights)", "Your folders + laptop folders (14 nights)", "Immich photos · Proxmox VM dumps", "Git mirrors"])}
+{arrow(622, 160, 758, 80, "03:15 nightly", G if ok.get("Homelab config", True) else R)}
+{box(760, 180, 290, 92, "Laptop (second place)", ["Config set + Immich library", "Nextcloud files (nightly)", "retried every 2 h if it sleeps"], G if ok.get("Offsite copy (", True) else R)}
+{arrow(905, 134, 905, 178, "after the nightly set", G if ok.get("Offsite copy (", True) else R)}
+{box(760, 330, 290, 92, "MEGA (offsite, encrypted)", ["One encrypted file a night, 4 kept", "Stopped: the MEGA login fails"], R)}
+{arrow(1000, 134, 1000, 328, "", R)}
+{box(360, 330, 260, 92, "Proxmox host", ["Snapshots of the whole VM and", "the Jellyfin box → backup disk"])}
+{arrow(622, 376, 758, 110, "Proxmox's own job", G)}
+</svg>'''
 
 
 def page(folders, bks, when):
@@ -79,7 +112,7 @@ td,th{{padding:10px 8px;border-top:1px solid #ffffff0d;text-align:left;vertical-
 .mono{{font:12px 'JetBrains Mono',monospace;color:var(--mute)}}.dot{{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px}}.ok{{background:var(--ok)}}.bad{{background:var(--bad)}}
 .flow{{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0 0}}.flow span{{background:var(--panel);border-radius:10px;padding:7px 11px;box-shadow:0 1px 0 #ffffff10 inset}}.flow i{{color:var(--acc);font-style:normal}}</style></head><body><main>
 <h1>Backup map</h1><p>Every synced folder on every device, and every backup, with its state. Checked {when}; refreshed every 6 hours by the homelab.</p>
-<div class="flow"><span>Phone · Laptop · Work PC</span><i>⇄ Syncthing ⇄</i><span>Homelab</span><i>→ 03:15 nightly →</i><span>Backup disk /mnt/data</span><i>→</i><span>Offsite copy</span></div>
+<div class="box" style="padding:14px">{diagram(bks, folders)}</div>
 <h2>Synced folders</h2><div class="box"><table><tr><th>Folder</th><th>Mode on the homelab</th><th>Other devices</th><th>Version history</th></tr>{frows}</table></div>
 <h2>Backups</h2><div class="box"><table><tr><th>What</th><th>When</th><th>Last</th><th>Kept</th><th>Size</th><th>Note</th></tr>{brows}</table></div>
 </main></body></html>'''
