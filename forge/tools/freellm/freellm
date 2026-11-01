@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Ask the homelab FreeLLMAPI (smart routing, free models). Key read from OpenClaw's .env at run time, never printed.
 #   freellm "question"            echo text | freellm "summarise this"      FREELLM_MODEL=fusion freellm "..."
+#   FREELLM_MAX=12000 freellm ...   a longer answer (default 2048 tokens)
 set -euo pipefail
 key=$(sed -n 's/^FREELLMAPI_API_KEY=//p' ~/.openclaw/.env | tr -d "\"'" | head -1)
 [ -n "$key" ] || { echo "freellm: no FREELLMAPI_API_KEY in ~/.openclaw/.env" >&2; exit 1; }
 prompt=${1:-}; [ -t 0 ] || prompt="$prompt"$'\n\n'"$(cat)"
-jq -n --arg m "${FREELLM_MODEL:-auto}" --arg p "$prompt" '{model:$m,messages:[{role:"user",content:$p}],max_tokens:2048}' |
+jq -n --arg m "${FREELLM_MODEL:-auto}" --arg p "$prompt" '{model:$m,messages:[{role:"user",content:$p}],max_tokens:($ENV.FREELLM_MAX|tonumber? // 2048)}' |
   curl -sS -m 180 http://192.168.10.20:3001/v1/chat/completions -H "Authorization: Bearer $key" -H 'Content-Type: application/json' -d @- |
   jq -r '.choices[0].message.content // .error.message // .'
