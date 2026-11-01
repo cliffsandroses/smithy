@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+"""Add skip-intro / skip-credits buttons to Jellyfin (Moosa, 2026-11-02: "Add skip buttons to jellyfin too").
+
+Installs the free Intro Skipper plugin (https://github.com/intro-skipper/intro-skipper) through Soma's own Jellyfin
+helper with the claude user's sign-in (run it on the laptop), restarts Jellyfin, then starts the detection task. Run: jellyfin-skip
+"""
+import os, subprocess, sys, time
+
+sys.path.insert(0, os.path.expanduser("~/Projects/axon-dashboard/next"))   # Soma's Jellyfin helper; the claude user's sign-in on the laptop
+import jf
+
+REPO = {"Name": "Intro Skipper", "Url": "https://intro-skipper.org/manifest.json", "Enabled": True}
+GUID = "c83d86bb-a1e0-4c35-a113-e2101cf4ee6b"
+print("Jellyfin", jf.jf("/System/Info").get("Version"))
+if any(p.get("Id", "").replace("-", "") == GUID.replace("-", "") for p in jf.jf("/Plugins")):
+    print("Intro Skipper is already installed")
+else:
+    repos = jf.jf("/Repositories") or []
+    if not any(r["Url"] == REPO["Url"] for r in repos):
+        jf.jf("/Repositories", repos + [REPO], method="POST"); print("repository added")
+    jf.jf(f"/Packages/Installed/Intro%20Skipper?assemblyGuid={GUID}", {}, method="POST"); print("installing…")
+    time.sleep(15); jf.jf("/System/Restart", {}, method="POST"); print("restarting Jellyfin…")
+    for _ in range(40):
+        time.sleep(5)
+        try: jf.jf("/System/Info"); break
+        except Exception: pass
+for t in jf.jf("/ScheduledTasks"):
+    if "intro" in t.get("Name", "").lower() or "credit" in t.get("Name", "").lower() or "segment" in t.get("Name", "").lower():
+        jf.jf(f"/ScheduledTasks/Running/{t['Id']}", {}, method="POST"); print("started:", t["Name"])
+print("done: skip buttons appear on episodes once detection has gone through them")
