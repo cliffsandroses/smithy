@@ -37,7 +37,9 @@ class TV:
             elif l == 127: l = struct.unpack(">Q", n(8))[0]
             b = n(l)
             if op == 8: raise OSError("the TV closed the connection: " + b[2:].decode(errors="replace"))   # e.g. asleep: "Try Again Later"
-            if op == 1: return json.loads(b)          # text; pings and other frames are skipped
+            if op == 9:                               # ping: answer pong, or the TV hangs up while the Allow prompt waits
+                m = os.urandom(4); self.s.sendall(bytes([0x8A, 0x80 | len(b)]) + m + bytes(x ^ m[i % 4] for i, x in enumerate(b))); continue
+            if op == 1: return json.loads(b)          # text; other frames are skipped
 
     def register(self, prompt=False):
         msg = {"type": "register", "id": "reg", "payload": {"pairingType": "PROMPT", "manifest": MANIFEST}}

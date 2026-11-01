@@ -181,6 +181,8 @@ def run():
 
 if __name__ == "__main__":
     if sys.argv[1:2] == ["page"]:
-        n = sys.argv[2]; print(page(n, study(n, open(f"{EC}/transcripts/{n}.txt").read()), sorted(glob.glob(f"{EC}/screens/{n}/*.jpg"))))
+        n = sys.argv[2]; v = (glob.glob(f"{EC}/**/{glob.escape(n)}.mp4", recursive=True) or [None])[0]
+        shots = screens(v, n) if v else sorted(glob.glob(f"{EC}/screens/{n}/*.jpg"))
+        print(page(n, study(n, open(f"{EC}/transcripts/{n}.txt").read()), shots))
     else:
         for m in run(): print(m)
