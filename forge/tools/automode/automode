@@ -17,8 +17,8 @@ case ${1:-} in
   claw) echo $(( $(date +%s) + ${2:-30} * 60 )) > "$S/hold"; rm -f "$S/mode" ;;    # forces the switch below
   release) rm -f "$S/hold"; rm -f "$S/mode" ;;
 esac
-CW=openclaw-gateway.service
-CLOSE="chiaki zen-bin steam discord vesktop dolphin okular gwenview mpv vlc kate soffice.bin blender obs gimp krita"
+CW=openclaw-gateway.service; [ "$(cat "${XDG_STATE_HOME:-$HOME/.local/state}/agent-switch" 2>/dev/null)" = hermes ] && CW=hermes-gateway.service   # agent-switch
+CLOSE="chiaki steam discord vesktop dolphin okular gwenview mpv vlc kate soffice.bin blender obs gimp krita"
 weight() { systemctl --user set-property --runtime $CW CPUWeight=$1 IOWeight=$1 2>/dev/null; }
 inuse() {   # a message handled (any channel, the web chat included) in the last 15 minutes, or a hold
   [ "$(cat "$S/hold" 2>/dev/null || echo 0)" -gt "$(date +%s)" ] && return 0
@@ -44,7 +44,7 @@ echo "$mode" > "$S/mode"
 [ "$old" = claw ] && balooctl6 resume >/dev/null 2>&1
 case $mode in
   claw)   systemctl --user start $CW; weight 1000
-          # Moosa, 2026-10-29/11-01: "Shut down all other processes". Apps are closed politely (they save), except Brave
+          # Moosa, 2026-10-29/11-01: "Shut down all other processes". Apps are closed politely (they save), except the browsers
           # (OpenClaw's chat runs there), the terminals and Claude Code, the desktop, Syncthing and KDE Connect.
           for a in $CLOSE; do pkill -TERM -x "$a" 2>/dev/null && echo "$a" >> "$S/closed"; done
           systemctl --user freeze clipper-auto clip-now 2>/dev/null; balooctl6 suspend >/dev/null 2>&1 ;;

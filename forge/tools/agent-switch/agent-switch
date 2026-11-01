@@ -1,0 +1,21 @@
+#!/bin/sh
+# agent-switch: one assistant at a time on the laptop (Moosa, 2026-11-01: "a switch that switches the both. Openclaw and
+# Hermes. If I click it to openclaw it should have openclaw available and Hermes should shut down and vice versa").
+#   agent-switch openclaw | hermes     switch          agent-switch      which one is on
+# automode follows the choice (~/.local/state/agent-switch): its OpenClaw rules then apply to whichever is on.
+S=${XDG_STATE_HOME:-$HOME/.local/state}; mkdir -p "$S"; F="$S/agent-switch"
+H=$HOME/.hermes/hermes-agent/hermes
+hermes_stop() { systemctl --user stop hermes-gateway 2>/dev/null; "$H" gateway stop >/dev/null 2>&1; pkill -f "hermes gateway run" 2>/dev/null; true; }
+hermes_start() {
+  if systemctl --user cat hermes-gateway >/dev/null 2>&1; then systemctl --user start hermes-gateway
+  else systemd-run --user --unit=hermes-gateway --collect "$H" gateway run >/dev/null; fi; }
+case ${1:-} in
+  openclaw) hermes_stop; echo openclaw > "$F"; systemctl --user start openclaw-gateway ;;
+  hermes)   systemctl --user stop openclaw-gateway; echo hermes > "$F"; hermes_start ;;
+  "") cat "$F" 2>/dev/null || echo openclaw; exit ;;
+  *) echo "agent-switch openclaw | hermes"; exit 1 ;;
+esac
+sleep 3
+on=$(cat "$F"); s1=$(systemctl --user is-active openclaw-gateway); s2=$(systemctl --user is-active hermes-gateway 2>/dev/null)
+msg="OpenClaw: $s1 · Hermes: ${s2:-inactive}"; echo "$on on. $msg"
+notify-send -a "Agent switch" "$on is on" "$msg" 2>/dev/null || true
