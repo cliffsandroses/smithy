@@ -1,30 +1,50 @@
 #!/usr/bin/env python3
 """Add skip-intro / skip-credits buttons to Jellyfin (Moosa, 2026-11-02: "Add skip buttons to jellyfin too").
 
-Installs the free Intro Skipper plugin (https://github.com/intro-skipper/intro-skipper) through Soma's own Jellyfin
-helper with the claude user's sign-in (run it on the laptop), restarts Jellyfin, then starts the detection task. Run: jellyfin-skip
+Installs the free Intro Skipper plugin (https://github.com/intro-skipper/intro-skipper), restarts Jellyfin and starts
+the detection task. Sign-in is by Quick Connect: no password; it prints a code, you approve it in Jellyfin
+(profile → Quick Connect) with an admin account. The sign-in is kept in memory only. Run: jellyfin-skip
 """
-import os, subprocess, sys, time
+import json, sys, time, urllib.request as u
 
-sys.path.insert(0, os.path.expanduser("~/Projects/axon-dashboard/next"))   # Soma's Jellyfin helper; the claude user's sign-in on the laptop
-import jf
-
-REPO = {"Name": "Intro Skipper", "Url": "https://intro-skipper.org/manifest.json", "Enabled": True}
+J = "http://192.168.10.21:8096"
+AUTH = 'MediaBrowser Client="jellyfin-skip", Device="homelab", DeviceId="jellyfin-skip", Version="1.0"'
 GUID = "c83d86bb-a1e0-4c35-a113-e2101cf4ee6b"
-print("Jellyfin", jf.jf("/System/Info").get("Version"))
-if any(p.get("Id", "").replace("-", "") == GUID.replace("-", "") for p in jf.jf("/Plugins")):
+REPO = {"Name": "Intro Skipper", "Url": "https://intro-skipper.org/manifest.json", "Enabled": True}
+
+
+def jf(path, data=None, method=None, token=None):
+    h = {"Authorization": AUTH + (f', Token="{token}"' if token else ""), "Content-Type": "application/json"}
+    r = u.Request(J + path, data=json.dumps(data).encode() if data is not None else None, method=method, headers=h)
+    with u.urlopen(r, timeout=180) as x:
+        b = x.read(); return json.loads(b) if b.strip() else None
+
+
+qc = jf("/QuickConnect/Initiate", {}, method="POST")
+print(f"\n  Quick Connect code: {qc['Code']}\n  Approve it: Jellyfin → your profile → Quick Connect ({J}/web/#/quickconnect)\n")
+for _ in range(120):
+    if jf(f"/QuickConnect/Connect?secret={qc['Secret']}").get("Authenticated"): break
+    time.sleep(3)
+else: sys.exit("not approved in 6 minutes")
+T = jf("/Users/AuthenticateWithQuickConnect", {"Secret": qc["Secret"]}, method="POST")["AccessToken"]
+call = lambda p, d=None, m=None: jf(p, d, m, T)
+
+print("signed in; Jellyfin", call("/System/Info").get("Version"))
+if any(p.get("Id", "").replace("-", "") == GUID.replace("-", "") for p in call("/Plugins")):
     print("Intro Skipper is already installed")
 else:
-    repos = jf.jf("/Repositories") or []
+    repos = call("/Repositories") or []
     if not any(r["Url"] == REPO["Url"] for r in repos):
-        jf.jf("/Repositories", repos + [REPO], method="POST"); print("repository added")
-    jf.jf(f"/Packages/Installed/Intro%20Skipper?assemblyGuid={GUID}", {}, method="POST"); print("installing…")
-    time.sleep(15); jf.jf("/System/Restart", {}, method="POST"); print("restarting Jellyfin…")
-    for _ in range(40):
+        call("/Repositories", repos + [REPO], "POST"); print("repository added")
+    try: call(f"/Packages/Installed/Intro%20Skipper?assemblyGuid={GUID}", {}, "POST")
+    except (TimeoutError, OSError) as e: print("install request:", e, "(often: already downloaded, needs the restart)")
+    print("installing…")
+    time.sleep(20); call("/System/Restart", {}, "POST"); print("restarting Jellyfin…")
+    for _ in range(60):
         time.sleep(5)
-        try: jf.jf("/System/Info"); break
+        try: call("/System/Info"); break
         except Exception: pass
-for t in jf.jf("/ScheduledTasks"):
-    if "intro" in t.get("Name", "").lower() or "credit" in t.get("Name", "").lower() or "segment" in t.get("Name", "").lower():
-        jf.jf(f"/ScheduledTasks/Running/{t['Id']}", {}, method="POST"); print("started:", t["Name"])
-print("done: skip buttons appear on episodes once detection has gone through them")
+for t in call("/ScheduledTasks"):
+    if any(w in t.get("Name", "").lower() for w in ("intro", "credit", "segment")):
+        call(f"/ScheduledTasks/Running/{t['Id']}", {}, "POST"); print("started:", t["Name"])
+print("done: skip buttons appear on each episode once detection has gone through it")
