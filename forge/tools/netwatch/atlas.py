@@ -88,9 +88,9 @@ def build():
     sec.append(rows("Web apps", ["App", "What", "From anywhere", "At home"], apps, "From anywhere = through Soma's door: only approved devices get in. All run on the homelab VM in Docker."))
     # work
     sec.append(rows("Work (EC01)", ["Thing", "What", "Where", "Open it"], [
-        ["<b>PNIP</b>", "The PCAI Network Intelligence Platform demo", code("~/EC01-work/pnip") + " (homelab + laptop)", a("https://soma.meldev.duckdns.org", "Soma → Vault → Artifacts → PNIP") + " · laptop: " + code("~/EC01-work/pnip/index.html")],
+        ["<b>PNIP</b>", "PCAI Network Intelligence Platform", code("~/EC01-work/pnip") + " (homelab + laptop)", a("https://soma.meldev.duckdns.org", "Soma → Vault → Artifacts → PNIP") + " · laptop: " + code("~/EC01-work/pnip/index.html")],
         ["PNIP rebuild", "After changing a page: menu, search index, Soma copy", code("~/EC01-work/pnip/build.py"), code("cd ~/EC01-work/pnip && python3 build.py")],
-        ["PNIP documents", "Demo script, before/after timing sheet", code("~/EC01-work/pnip/docs"), ""],
+        ["Demo prep (private)", "Your demo script and timing sheet, kept outside PNIP", code("~/EC01-work/demo-prep"), ""],
         ["PNIP data", "228 SN4700M parts, NVIDIA list, sources", code("~/EC01-work/pnip/data"), ""],
         ["<b>EC01</b>", "Your work notes and files (from the work PC)", code("~/EC01") + " (homelab, laptop, work PC)", "the work PC only sends; work there"],
         ["<b>EC01-work</b>", "Everything made from EC01 (never wiped by the work PC)", code("~/EC01-work") + " (homelab + laptop)", "backed up nightly"],
