@@ -4,7 +4,7 @@
 #   dev    - Claude Code busy in the last minute                                      -> OpenClaw paused
 #   idle   - neither for 10 minutes                                                   -> OpenClaw and Syncthing back; clips get made
 #   claw   - OpenClaw in use (a message handled in the last 15 min) or `automode claw [min]` -> OpenClaw on, first call on
-#            CPU and disk, background work stopped (clip jobs, file indexing); open apps are left alone
+#            CPU and disk, background work stopped (clip jobs, file indexing), other apps closed (list in CLOSE)
 # The laptop has 7 GB; OpenClaw alone takes ~1.2 GB, which made Remote Play stutter.
 # 2026-10-29, Moosa: "make sure openclaw is active when I need it … When in use it should be given priority in the system.
 # Shut down all other processes." Dev mode used to stop OpenClaw, so it went down mid-chat whenever Claude Code got busy;
@@ -18,6 +18,7 @@ case ${1:-} in
   release) rm -f "$S/hold"; rm -f "$S/mode" ;;
 esac
 CW=openclaw-gateway.service
+CLOSE="chiaki zen-bin steam discord vesktop dolphin okular gwenview mpv vlc kate soffice.bin blender obs gimp krita"
 weight() { systemctl --user set-property --runtime $CW CPUWeight=$1 IOWeight=$1 2>/dev/null; }
 inuse() {   # a message handled (any channel, the web chat included) in the last 15 minutes, or a hold
   [ "$(cat "$S/hold" 2>/dev/null || echo 0)" -gt "$(date +%s)" ] && return 0
@@ -43,6 +44,9 @@ echo "$mode" > "$S/mode"
 [ "$old" = claw ] && balooctl6 resume >/dev/null 2>&1
 case $mode in
   claw)   systemctl --user start $CW; weight 1000
+          # Moosa, 2026-10-29/11-01: "Shut down all other processes". Apps are closed politely (they save), except Brave
+          # (OpenClaw's chat runs there), the terminals and Claude Code, the desktop, Syncthing and KDE Connect.
+          for a in $CLOSE; do pkill -TERM -x "$a" 2>/dev/null && echo "$a" >> "$S/closed"; done
           systemctl --user freeze clipper-auto clip-now 2>/dev/null; balooctl6 suspend >/dev/null 2>&1 ;;
   stream) systemctl --user stop $CW; systemctl --user freeze clipper-auto clip-now 2>/dev/null ;;   # frozen, not lost
   dev)    systemctl --user start $CW; weight 20; systemctl --user thaw clipper-auto clip-now 2>/dev/null; systemctl --user start syncthing ;;
