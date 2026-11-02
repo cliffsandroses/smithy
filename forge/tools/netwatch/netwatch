@@ -110,6 +110,9 @@ def sample():
         import atlas; r = atlas.run(); r and print(r)
     except Exception as e: print("atlas failed:", type(e).__name__, e, file=sys.stderr)
     try:
+        import oraclegrab; r = oraclegrab.run(notify=ntfy); r and print(r)
+    except Exception as e: print("oraclegrab failed:", type(e).__name__, e, file=sys.stderr)
+    try:
         import llmpick; r = llmpick.run(); r and print(r)
     except Exception as e: print("llmpick failed:", type(e).__name__, e, file=sys.stderr)
     try:   # PCAI recordings dropped in EC01/PCAI/inbox from the work PC (pcai-inbox runs on its own, it takes hours)
