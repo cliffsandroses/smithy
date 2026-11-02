@@ -22,8 +22,8 @@ set -uo pipefail
 S=${XDG_STATE_HOME:-$HOME/.local/state}/automode; mkdir -p "$S"
 WHY=0
 case ${1:-} in
-  claw) echo $(( $(date +%s) + ${2:-30} * 60 )) > "$S/hold"; rm -f "$S/mode" ;;    # forces the switch below
-  release) rm -f "$S/hold"; rm -f "$S/mode" ;;
+  claw) echo $(( $(date +%s) + ${2:-30} * 60 )) > "$S/hold"; echo none > "$S/mode" ;;    # forces the switch below
+  release) rm -f "$S/hold"; echo none > "$S/mode" ;;   # "none" forces the switch below (a removed file read as idle = no change)
   why) WHY=1 ;;
 esac
 CW=openclaw-gateway.service; [ "$(cat "${XDG_STATE_HOME:-$HOME/.local/state}/agent-switch" 2>/dev/null)" = hermes ] && CW=hermes-gateway.service   # agent-switch
@@ -65,7 +65,7 @@ guard && why="$why; guard on (battery ${bat}%/AC ${ac}, ${temp} °C, ${mem} MB):
 if [ $WHY = 1 ]; then echo "mode now: $(cat "$S/mode" 2>/dev/null || echo idle) → would be: $mode — $why"; echo "chiaki ${chiaki_cpu}% CPU · claude ${claude_cpu}% · ${mem} MB free · ${temp} °C · battery ${bat}% (AC ${ac})"; exit 0; fi
 [ "$mode" != idle ] && echo "$now" > "$S/busy"
 last=$(cat "$S/busy" 2>/dev/null || echo 0); old=$(cat "$S/mode" 2>/dev/null || echo idle)
-[ "$mode" = idle ] && [ $((now - last)) -lt 600 ] && [ "$old" != claw ] && mode=$old   # wait 10 min of quiet before waking OpenClaw
+[ "$mode" = idle ] && [ $((now - last)) -lt 600 ] && [ "$old" != claw ] && [ "$old" != none ] && mode=$old   # wait 10 min of quiet before waking OpenClaw
 # guards: no heavy background jobs on low battery, heat or low memory
 if guard; then systemctl --user freeze clipper-auto clip-now 2>/dev/null
 elif [ "$mode" = idle ] && [ "$old" = idle ] && [ $((now - $(cat "$S/clip" 2>/dev/null || echo 0))) -gt 1800 ]; then
