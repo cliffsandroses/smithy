@@ -1,21 +1,30 @@
 #!/usr/bin/env bash
-# Automatic stream / dev mode (Moosa, 2026-10-25). Every 20 s (automode.timer):
-#   stream - chiaki running, or any app playing audio/video (Jellyfin, browser, mpv)  -> OpenClaw + Syncthing off, clip jobs frozen (resume after)
-#   dev    - Claude Code busy in the last minute                                      -> OpenClaw paused
-#   idle   - neither for 10 minutes                                                   -> OpenClaw and Syncthing back; clips get made
+# Automatic modes (Moosa, 2026-10-25; resource-aware 2026-11-02). Every 20 s (automode.timer):
 #   claw   - OpenClaw in use (a message handled in the last 15 min) or `automode claw [min]` -> OpenClaw on, first call on
 #            CPU and disk, background work stopped (clip jobs, file indexing), other apps closed (list in CLOSE)
+#   stream - Remote Play ACTUALLY streaming (Chiaki connected to the console or decoding video), or a video player playing.
+#            Resource-aware (Moosa, 2026-11-02: "If chiaki is not actually streaming or actively connecting to my console then
+#            the automode shouldn't just close openclaw"): OpenClaw is only stopped when memory is short (< 2.5 GB free) or the
+#            laptop is hot (>= 85 °C); otherwise it keeps running at the lowest priority. Clip jobs frozen (resume after).
+#   call   - the microphone is in use (a call or a recording)       -> heavy background work frozen, OpenClaw low priority
+#   dev    - Claude Code busy in the last minute                     -> OpenClaw low priority
+#   idle   - none of the above for 10 minutes                        -> OpenClaw and Syncthing on; clips get made
+# Guards in every mode: on battery below 25 %, hotter than 90 °C, or under 600 MB free memory, no clip jobs start and
+# running ones are frozen.
 # The laptop has 7 GB; OpenClaw alone takes ~1.2 GB, which made Remote Play stutter.
 # 2026-10-29, Moosa: "make sure openclaw is active when I need it … When in use it should be given priority in the system.
 # Shut down all other processes." Dev mode used to stop OpenClaw, so it went down mid-chat whenever Claude Code got busy;
 # now it only runs it at low priority, and claw beats every other mode.
 #   automode claw [min]   OpenClaw now, held for [min] minutes (default 30)      automode release   end the hold
+#   automode why          what automode sees right now and which mode it picks
 # Syncthing is never paused (Moosa, 2026-10-29: "Syncthing shouldn't be paused").
 set -uo pipefail
 S=${XDG_STATE_HOME:-$HOME/.local/state}/automode; mkdir -p "$S"
+WHY=0
 case ${1:-} in
   claw) echo $(( $(date +%s) + ${2:-30} * 60 )) > "$S/hold"; rm -f "$S/mode" ;;    # forces the switch below
   release) rm -f "$S/hold"; rm -f "$S/mode" ;;
+  why) WHY=1 ;;
 esac
 CW=openclaw-gateway.service; [ "$(cat "${XDG_STATE_HOME:-$HOME/.local/state}/agent-switch" 2>/dev/null)" = hermes ] && CW=hermes-gateway.service   # agent-switch
 CLOSE="chiaki steam discord vesktop dolphin okular gwenview mpv vlc kate soffice.bin blender obs gimp krita"
@@ -24,23 +33,45 @@ inuse() {   # a message handled (any channel, the web chat included) in the last
   [ "$(cat "$S/hold" 2>/dev/null || echo 0)" -gt "$(date +%s)" ] && return 0
   systemctl --user is-active -q $CW && journalctl --user -u $CW --since "-15min" -o cat --no-pager 2>/dev/null | grep -qE "message (processed|dispatch)|chat\.send|inbound"
 }
-cpu() { local t=0 p; for p in $(pgrep -x claude); do t=$((t + $(awk '{print $14+$15}' /proc/$p/stat 2>/dev/null || echo 0))); done; echo $t; }
-now=$(date +%s); c=$(cpu); read -r pc pt < "$S/cpu" 2>/dev/null || { pc=$c; pt=$now; }
-echo "$c $now" > "$S/cpu"
-mode=idle
-# stream = Remote Play, or a video player actually playing (Jellyfin, mpv, VLC); music or a YouTube tab doesn't count
-playing() { pactl list sink-inputs 2>/dev/null | awk 'BEGIN{RS="Sink Input #"} /Corked: no/ && tolower($0) ~ /jellyfin|mpv|vlc|delfin|celluloid|chiaki/ {f=1} END{exit !f}'; }
-if inuse; then mode=claw
-elif pgrep -x chiaki >/dev/null || playing; then mode=stream
-elif [ $(( (c - pc) * 100 / $(getconf CLK_TCK) )) -gt $(( (now - pt) * 10 )) ]; then mode=dev; fi   # claude >10% CPU since last check
+ticks() { local t=0 p; for p in $(pgrep -x "$1"); do t=$((t + $(awk '{print $14+$15}' /proc/$p/stat 2>/dev/null || echo 0))); done; echo $t; }
+pct() {   # CPU % of process $1 since the last run (state file $S/cpu-$1)
+  local c n pc pt; c=$(ticks "$1"); n=$(date +%s); { [ -f "$S/cpu-$1" ] && read -r pc pt < "$S/cpu-$1"; } || { pc=$c; pt=$n; }
+  echo "$c $n" > "$S/cpu-$1"; [ $((n - pt)) -gt 0 ] && echo $(( (c - pc) * 100 / $(getconf CLK_TCK) / (n - pt) )) || echo 0; }
+now=$(date +%s)
+# --- what the laptop is doing -------------------------------------------------------------------------------------------
+claude_cpu=$(pct claude); chiaki_cpu=$(pct chiaki)
+mem=$(( $(awk '/MemAvailable/{print $2}' /proc/meminfo) / 1024 ))                                           # MB free
+temp=$(( $(cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null | sort -n | tail -1 || echo 0) / 1000 ))     # hottest °C
+bat=$(cat /sys/class/power_supply/BAT0/capacity 2>/dev/null || echo 100); ac=$(cat /sys/class/power_supply/AC/online 2>/dev/null || echo 1)
+sinks=$(pactl list sink-inputs 2>/dev/null)
+playing() { awk 'BEGIN{RS="Sink Input #"} /Corked: no/ && tolower($0) ~ /jellyfin|mpv|vlc|delfin|celluloid/ {f=1} END{exit !f}' <<<"$sinks"; }
+chiaki_live() {   # Chiaki open is not enough: it must be talking to the console or decoding a stream
+  pgrep -x chiaki >/dev/null || return 1
+  ss -Htunp 2>/dev/null | grep '"chiaki"' | grep -qvE '127\.0\.0\.1|\[::1\]' && return 0          # a connection (LAN or PSN relay)
+  [ "$chiaki_cpu" -ge 15 ] && return 0                                                              # decoding video
+  awk 'BEGIN{RS="Sink Input #"} /Corked: no/ && tolower($0) ~ /chiaki/ {f=1} END{exit !f}' <<<"$sinks"   # game audio playing
+}
+mic() { pactl list source-outputs short 2>/dev/null | grep -q . ; }
+tight() { [ "$mem" -lt 2500 ] || [ "$temp" -ge 85 ]; }
+guard() { { [ "$ac" = 0 ] && [ "$bat" -lt 25 ]; } || [ "$temp" -ge 90 ] || [ "$mem" -lt 600 ]; }
+mode=idle; why="nothing busy"
+if inuse; then mode=claw; why="OpenClaw in use or held"
+elif chiaki_live; then if tight; then mode=stream; why="Remote Play streaming, ${mem} MB free, ${temp} °C: OpenClaw stopped"; else mode=stream-light; why="Remote Play streaming with room to spare (${mem} MB, ${temp} °C): OpenClaw kept at lowest priority"; fi
+elif playing; then if tight; then mode=stream; why="video playing, resources tight"; else mode=stream-light; why="video playing, resources fine"; fi
+elif mic; then mode=call; why="microphone in use"
+elif [ "$claude_cpu" -gt 10 ]; then mode=dev; why="Claude Code busy (${claude_cpu}% CPU)"; fi
+pgrep -x chiaki >/dev/null && ! chiaki_live && why="$why (Chiaki open but idle: ignored)"
+guard && why="$why; guard on (battery ${bat}%/AC ${ac}, ${temp} °C, ${mem} MB): no clip jobs"
+if [ $WHY = 1 ]; then echo "mode now: $(cat "$S/mode" 2>/dev/null || echo idle) → would be: $mode — $why"; echo "chiaki ${chiaki_cpu}% CPU · claude ${claude_cpu}% · ${mem} MB free · ${temp} °C · battery ${bat}% (AC ${ac})"; exit 0; fi
 [ "$mode" != idle ] && echo "$now" > "$S/busy"
 last=$(cat "$S/busy" 2>/dev/null || echo 0); old=$(cat "$S/mode" 2>/dev/null || echo idle)
 [ "$mode" = idle ] && [ $((now - last)) -lt 600 ] && [ "$old" != claw ] && mode=$old   # wait 10 min of quiet before waking OpenClaw
-# idle: make clips from new VODs, one heavy job at a time, at most every 30 min
-if [ "$mode" = idle ] && [ "$old" = idle ] && [ $((now - $(cat "$S/clip" 2>/dev/null || echo 0))) -gt 1800 ]; then
-  echo "$now" > "$S/clip"; systemctl --user start --no-block clipper-auto; fi
+# guards: no heavy background jobs on low battery, heat or low memory
+if guard; then systemctl --user freeze clipper-auto clip-now 2>/dev/null
+elif [ "$mode" = idle ] && [ "$old" = idle ] && [ $((now - $(cat "$S/clip" 2>/dev/null || echo 0))) -gt 1800 ]; then
+  echo "$now" > "$S/clip"; systemctl --user thaw clipper-auto clip-now 2>/dev/null; systemctl --user start --no-block clipper-auto; fi   # idle: one clip job at most every 30 min
 [ "$mode" = "$old" ] && exit 0
-echo "$mode" > "$S/mode"
+echo "$mode" > "$S/mode"; echo "$why" > "$S/why"
 [ "$old" = claw ] && balooctl6 resume >/dev/null 2>&1
 case $mode in
   claw)   systemctl --user start $CW; weight 1000
@@ -49,7 +80,10 @@ case $mode in
           for a in $CLOSE; do pkill -TERM -x "$a" 2>/dev/null && echo "$a" >> "$S/closed"; done
           systemctl --user freeze clipper-auto clip-now 2>/dev/null; balooctl6 suspend >/dev/null 2>&1 ;;
   stream) systemctl --user stop $CW; systemctl --user freeze clipper-auto clip-now 2>/dev/null ;;   # frozen, not lost
+  stream-light) systemctl --user start $CW; weight 1; systemctl --user freeze clipper-auto clip-now 2>/dev/null ;;
+  call)   systemctl --user start $CW; weight 10; systemctl --user freeze clipper-auto clip-now 2>/dev/null; balooctl6 suspend >/dev/null 2>&1 ;;
   dev)    systemctl --user start $CW; weight 20; systemctl --user thaw clipper-auto clip-now 2>/dev/null; systemctl --user start syncthing ;;
-  idle)   systemctl --user thaw clipper-auto clip-now 2>/dev/null; systemctl --user start $CW syncthing; weight 100 ;;
+  idle)   systemctl --user thaw clipper-auto clip-now 2>/dev/null; systemctl --user start $CW syncthing; weight 100; balooctl6 resume >/dev/null 2>&1 ;;
 esac
-logger -t automode "$old -> $mode"; notify-send -a Automode "Mode: $mode" "OpenClaw $(case $mode in claw) echo "on, first priority";; stream) echo paused;; dev) echo "on, low priority";; *) echo on;; esac)" 2>/dev/null || true
+logger -t automode "$old -> $mode: $why"
+notify-send -a Automode "Mode: $mode" "$(case $mode in claw) echo "OpenClaw on, first priority";; stream) echo "OpenClaw paused";; stream-light) echo "OpenClaw kept, lowest priority";; call) echo "Background work paused for your call";; dev) echo "OpenClaw on, low priority";; *) echo "OpenClaw on";; esac)" 2>/dev/null || true
