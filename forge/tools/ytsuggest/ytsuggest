@@ -48,13 +48,28 @@ def related(vid):
     walk(json.loads(m.group(1)).get('contents', {}).get('twoColumnWatchNextResults', {}).get('secondaryResults', {}))
     return [x for x in out if x[0] and len(x[0]) == 11]
 
+def saved_ids():
+    """YouTube links inside his saved reels (laptop ~/reels-library) + yt-history.json — files only, no account."""
+    try:
+        out = subprocess.run(['ssh', '-o', 'ConnectTimeout=8', 'moosa@192.168.10.30', r'grep -rhoE "(youtu\.be/|v=|shorts/)[A-Za-z0-9_-]{11}" ~/reels-library --include=*.json'],
+                             capture_output=True, text=True, timeout=60).stdout
+        ids = sorted({re.sub(r'.*(be/|v=|shorts/)', '', x) for x in out.split()})
+        if ids: open(f'{CFG}/saved.txt', 'w').write('\n'.join(ids) + '\n')
+    except Exception: pass
+    saved = open(f'{CFG}/saved.txt').read().split() if os.path.exists(f'{CFG}/saved.txt') else []
+    try: hist = [x['id'] for x in json.load(open(H('~/.local/share/soma-next/yt-history.json')))['items'] if not SKIP.search(x.get('title', ''))]
+    except Exception: hist = []
+    return saved, hist
+
 def main():
     dry = '--dry' in sys.argv
     seen = set(json.load(open(SEEN))) if os.path.exists(SEEN) else set()
     fresh = seed_playlist()                                        # what he saved most recently counts most
     wl = file_ids(f'{OUT}/watch-later.txt'); travel = re.findall(r'youtu\.be/([\w-]{11})', open(f'{OUT}/travel-playlist.md').read()) if os.path.exists(f'{OUT}/travel-playlist.md') else []
-    seen |= set(wl) | set(travel) | set(fresh)
-    seeds = [(v, 3) for v in fresh[:8]] + [(v, 2) for v in random.sample(travel, min(7, len(travel)))] + [(v, 1) for v in random.sample(wl, min(5, len(wl)))]
+    saved, hist = saved_ids()
+    add_now = [v for v in saved if v not in seen]                 # saved videos go straight into the playlist, once
+    seen |= set(wl) | set(travel) | set(fresh) | set(hist)
+    seeds = [(v, 3) for v in fresh[:8]] + [(v, 2) for v in random.sample(travel, min(7, len(travel)))] + [(v, 2) for v in saved] + [(v, 1) for v in random.sample(wl, min(4, len(wl)))] + [(v, 1) for v in random.sample(hist, min(3, len(hist)))]
     score, info = collections.Counter(), {}
     for vid, w in seeds:
         try: rel = related(vid)
@@ -69,6 +84,10 @@ def main():
         if ch and per_ch[ch] >= 2: continue                        # variety: at most 2 per channel
         per_ch[ch] += 1; pick.append(rid)
         if len(pick) == 25: break
+    pick = (add_now + [v for v in pick if v not in add_now])[:25]
+    for v in add_now:
+        try: o = json.loads(get(f'https://www.youtube.com/oembed?url=https://youtu.be/{v}&format=json')); info[v] = (o['title'], o['author_name'])
+        except Exception: info[v] = ('(from your saved list)', '')
     if not pick: print('nothing new'); return
     link = 'https://www.youtube.com/watch_videos?video_ids=' + ','.join(pick)
     day = datetime.date.today().isoformat()
