@@ -9,6 +9,7 @@
 #   call   - the microphone is in use (a call or a recording)       -> heavy background work frozen, OpenClaw low priority
 #   dev    - Claude Code busy in the last minute                     -> OpenClaw low priority
 #   idle   - none of the above for 10 minutes                        -> OpenClaw and Syncthing on; clips get made
+# Memory emergency: under 500 MB free and OpenClaw not in use -> OpenClaw stopped until memory recovers.
 # Guards in every mode: on battery below 25 %, hotter than 90 °C, or under 600 MB free memory, no clip jobs start and
 # running ones are frozen.
 # The laptop has 7 GB; OpenClaw alone takes ~1.2 GB, which made Remote Play stutter.
@@ -55,7 +56,8 @@ mic() { pactl list source-outputs short 2>/dev/null | grep -q . ; }
 tight() { [ "$mem" -lt 2500 ] || [ "$temp" -ge 85 ]; }
 guard() { { [ "$ac" = 0 ] && [ "$bat" -lt 25 ]; } || [ "$temp" -ge 90 ] || [ "$mem" -lt 600 ]; }
 mode=idle; why="nothing busy"
-if inuse; then mode=claw; why="OpenClaw in use or held"
+if [ "$mem" -lt 500 ] && ! inuse; then mode=stream; why="memory nearly gone (${mem} MB free): OpenClaw stopped to free ~600 MB"   # Moosa 2026-11-02: laptop lagging, RAM+swap full
+elif inuse; then mode=claw; why="OpenClaw in use or held"
 elif chiaki_live; then if tight; then mode=stream; why="Remote Play streaming, ${mem} MB free, ${temp} °C: OpenClaw stopped"; else mode=stream-light; why="Remote Play streaming with room to spare (${mem} MB, ${temp} °C): OpenClaw kept at lowest priority"; fi
 elif playing; then if tight; then mode=stream; why="video playing, resources tight"; else mode=stream-light; why="video playing, resources fine"; fi
 elif mic; then mode=call; why="microphone in use"
@@ -66,6 +68,7 @@ if [ $WHY = 1 ]; then echo "mode now: $(cat "$S/mode" 2>/dev/null || echo idle) 
 [ "$mode" != idle ] && echo "$now" > "$S/busy"
 last=$(cat "$S/busy" 2>/dev/null || echo 0); old=$(cat "$S/mode" 2>/dev/null || echo idle)
 [ "$mode" = idle ] && [ $((now - last)) -lt 600 ] && [ "$old" != claw ] && [ "$old" != none ] && mode=$old   # wait 10 min of quiet before waking OpenClaw
+[ "$mode" = idle ] && [ "$old" = stream ] && [ "$mem" -lt 1500 ] && mode=stream   # only wake OpenClaw when there is room for it
 # guards: no heavy background jobs on low battery, heat or low memory
 if guard; then systemctl --user freeze clipper-auto clip-now 2>/dev/null
 elif [ "$mode" = idle ] && [ "$old" = idle ] && [ $((now - $(cat "$S/clip" 2>/dev/null || echo 0))) -gt 1800 ]; then
