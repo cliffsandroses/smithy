@@ -13,6 +13,7 @@ import io, json, os, re, subprocess, time, zipfile
 
 H = os.path.expanduser("~"); CFG = f"{H}/.oci/config"; STATE = f"{H}/.local/share/netwatch/oraclegrab.json"
 OCI = f"{H}/.local/bin/oci"; EVERY = 600
+ONLY = {4}          # which VM sizes (OCPUs) to keep trying; add 2 back to try the 2-OCPU stacks again
 
 
 def oci(*a):
@@ -55,6 +56,7 @@ def run(force=False, notify=None):
                     m = re.search(r'ocpus\s*=\s*"?(\d+)', tf); size[s["id"]] = int(m.group(1)) if m and "A1.Flex" in tf else 0
             for s in stacks:
                 if not size.get(s["id"]): continue                                           # not an A1 VM stack
+                if size[s["id"]] not in ONLY: continue                                         # Moosa 2026-11-03: stop trying the 2-OCPU VMs for now
                 if used + size[s["id"]] > 4: continue                                         # would not fit the free 4 OCPUs
                 jobs = oci("resource-manager", "job", "list", "--stack-id", s["id"], "--all")
                 if any(j["lifecycle-state"] in ("ACCEPTED", "IN_PROGRESS") for j in jobs): continue
