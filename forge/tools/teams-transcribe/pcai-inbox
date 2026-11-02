@@ -4,7 +4,10 @@ paste the link on the work PC (Moosa, 2026-11-02: "Teams transcribe should work 
 give the url on my work pc. And I need screenshots too at necessary times of the video. I want to use this to update
 pcai tool").
 
-On the work PC: put the recording's videomanifest URL (F12 → Network → filter "videomanifest" → play 2 s → Copy URL) in a
+Easiest on the work PC (signed in): open the recording and click the "Grab recording" bookmark (grab-recording.js). It
+saves <name>.vtt (Teams' transcript, with speakers) and <name>.txt (a fresh video link) straight into EC01\\PCAI\\inbox.
+A Teams transcript is used as is (no Whisper); the video is still downloaded for the screenshots.
+Or by hand: put the recording's videomanifest URL (F12 → Network → filter "videomanifest" → play 2 s → Copy URL) in a
 text file in EC01\\PCAI\\inbox, e.g. "Day 5 networking.txt". EC01 sends it to the homelab; netwatch runs this every minute:
   1. ffmpeg downloads the recording (the URL carries its own short-lived token) → EC01/PCAI/recordings/<name>.mp4
   2. screenshots where the screen changes (a new slide, a new window; at most 1 per 20 s, 80 in all), each named by its
@@ -154,8 +157,25 @@ def page(name, s, shots):
     return fn
 
 
+def vtt(path, name):
+    """Teams .vtt → the transcript format used everywhere here: [h:mm:ss] Speaker: text"""
+    out, t, who = [], None, ""
+    for l in open(path, encoding="utf-8-sig", errors="ignore").read().splitlines():
+        m = re.match(r"(\d+):(\d+):(\d+)[.,]\d+\s+-->", l)
+        if m: t = f"{int(m[1])}:{m[2]}:{m[3]}"; continue
+        if t and l.strip() and not l.startswith(("WEBVTT", "NOTE")) and not re.fullmatch(r"[0-9a-f-]+(/\d+-\d+)?", l.strip()):
+            v = re.match(r"<v ([^>]+)>(.*?)(</v>)?$", l.strip()); who, txt = (v[1], v[2]) if v else (who, re.sub(r"<[^>]+>", "", l))
+            out.append(f"[{t}] {who + ': ' if who else ''}{txt.strip()}"); t = None
+    dst = f"{EC}/transcripts/{name}.txt"; os.makedirs(os.path.dirname(dst), exist_ok=True)
+    open(dst, "w").write("\n".join(out) + "\n"); return dst
+
+
 def one(item):
     name = os.path.splitext(os.path.basename(item))[0]
+    teams = f"{INBOX}/{name}.vtt"
+    if os.path.exists(teams):                                          # Teams' own transcript: no Whisper needed
+        vtt(teams, name); os.rename(teams, teams + ".done")
+    if item.endswith(".vtt"): return f"{name}: Teams transcript ready"
     src = item if item.endswith(".mp4") else open(item).read().strip().split()[0]
     video = download(src, name); shots = screens(video, name); transcribe(video, name)
     # no study page here: Moosa writes those with Claude, when and how he says (2026-11-02)
@@ -164,7 +184,8 @@ def one(item):
 
 def run():
     os.makedirs(INBOX, exist_ok=True); done = []
-    for item in sorted(glob.glob(f"{INBOX}/*.txt") + glob.glob(f"{INBOX}/*.url") + glob.glob(f"{INBOX}/*.mp4")):
+    vtts = [v for v in glob.glob(f"{INBOX}/*.vtt") if not any(os.path.exists(v[:-4] + e) for e in (".txt", ".url", ".mp4"))]   # transcript only
+    for item in sorted(glob.glob(f"{INBOX}/*.txt") + glob.glob(f"{INBOX}/*.url") + glob.glob(f"{INBOX}/*.mp4") + vtts):
         if time.time() - os.path.getmtime(item) < 30: continue        # still syncing
         lock = item + ".working"
         if os.path.exists(lock): continue
