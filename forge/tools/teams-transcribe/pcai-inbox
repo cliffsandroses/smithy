@@ -13,6 +13,8 @@ text file in EC01\\PCAI\\inbox, e.g. "Day 5 networking.txt". EC01 sends it to th
   2. screenshots where the screen changes (a new slide, a new window; at most 1 per 20 s, 80 in all), each named by its
      time → EC01/PCAI/screens/<name>/
   3. a transcript on the homelab (faster-whisper, 20-minute pieces) → EC01/PCAI/transcripts/<name>.txt
+  File names start with what the recording is for: [pnip] (PNIP / PCAI tool material), [me] (Moosa's own notes and
+  questions), [meeting] (team meeting: summary and actions). Claude reads that tag when Moosa asks about the recording.
   Study pages are not made here: Moosa writes them with Claude, when and how he says (2026-11-02). `pcai-inbox page <name>`
   stays for when he asks for a draft.
 The inbox file is renamed .done (or .failed with the reason inside). Videos already downloaded (.mp4 in the inbox) work too.

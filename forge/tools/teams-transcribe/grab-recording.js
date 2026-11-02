@@ -4,7 +4,8 @@
 // On the recording's page (…/stream.aspx?id=… or the file's link) click the bookmark:
 //   1. the first time it asks for a folder: pick EC01\PCAI\inbox (remembered after that on this SharePoint site);
 //   2. it saves <name>.vtt — Teams' own transcript, with speakers — when the meeting had one;
-//   3. it saves <name>.txt with a fresh download link for the video; the homelab downloads it within a minute, takes
+//   3. it asks what the recording is for (PNIP, me, team meeting) and puts that in the file names as [pnip]/[me]/[meeting];
+//   4. it saves <name>.txt with a fresh download link for the video; the homelab downloads it within a minute, takes
 //      screenshots and (when there was no Teams transcript) transcribes it.
 // Uses only the browser's existing sign-in. Nothing is installed; nothing goes anywhere but that folder.
 (async () => {
@@ -31,7 +32,9 @@
     const enc = "u!" + btoa(unescape(encodeURIComponent(fileUrl))).replace(/=+$/, "").replace(/\//g, "_").replace(/\+/g, "-");
     const api = async (p, raw) => { const r = await fetch(site + "/_api/v2.1/" + p, { credentials: "include", headers: { accept: raw ? "*/*" : "application/json" } }); if (!r.ok) throw new Error(r.status + " on " + p.split("?")[0]); return raw ? r.text() : r.json() };
     const item = await api(`shares/${enc}/driveItem?$select=id,name,parentReference,@content.downloadUrl`);
-    const drive = item.parentReference.driveId, base = item.name.replace(/\.[^.]+$/, "").replace(/[\\/:*?"<>|]+/g, " ").trim();
+    const why = (prompt("What is this recording for?\n1 = PNIP / PCAI tool\n2 = me (my notes, my questions)\n3 = team meeting (summary + actions)", "1") || "1").trim();
+    const tag = { "1": "pnip", "2": "me", "3": "meeting" }[why] || "pnip";
+    const drive = item.parentReference.driveId, base = `[${tag}] ` + item.name.replace(/\.[^.]+$/, "").replace(/[\\/:*?"<>|]+/g, " ").trim();
     let got = [];
     // Teams transcript
     try {
