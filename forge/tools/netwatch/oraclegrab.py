@@ -13,7 +13,9 @@ import io, json, os, re, subprocess, time, zipfile
 
 H = os.path.expanduser("~"); CFG = f"{H}/.oci/config"; STATE = f"{H}/.local/share/netwatch/oraclegrab.json"
 OCI = f"{H}/.local/bin/oci"; EVERY = 600
-ONLY = {4}          # which VM sizes (OCPUs) to keep trying; add 2 back to try the 2-OCPU stacks again
+# which VM sizes (OCPUs) to try: 4 only until 2026-11-06 (Moosa: "stop trying for the 2 OCPU VMs for now"), then 2 as well.
+# Free-tier limits stop anything past 4 OCPUs, so trying both can't cost money.
+ONLY = {4} if time.time() < 1793898000 else {4, 2}
 
 
 def oci(*a):
