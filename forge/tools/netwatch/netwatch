@@ -110,6 +110,9 @@ def sample():
         import atlas; r = atlas.run(); r and print(r)
     except Exception as e: print("atlas failed:", type(e).__name__, e, file=sys.stderr)
     try:
+        import toolsmd; r = toolsmd.run(); r and print(r)
+    except Exception as e: print("toolsmd failed:", type(e).__name__, e, file=sys.stderr)
+    try:
         import oraclegrab; r = oraclegrab.run(notify=ntfy); r and print(r)
     except Exception as e: print("oraclegrab failed:", type(e).__name__, e, file=sys.stderr)
     try:
