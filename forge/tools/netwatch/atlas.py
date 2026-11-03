@@ -96,7 +96,7 @@ def build():
         ["<b>EC01-work</b>", "Everything made from EC01 (never wiped by the work PC)", code("~/EC01-work") + " (homelab + laptop)", "backed up nightly"],
         ["KT pack", "The PCAI network KT files you uploaded", code("~/EC01-work/inbox/fw-kt-0351"), ""],
         ["Recordings → transcripts", "Put a recording link file in EC01\\PCAI\\inbox on the work PC", code("~/EC01-work/transcripts, screens, recordings"), "automatic (netwatch)"],
-        ["PCAI Tool (old)", "The earlier study tool, replaced by PNIP", code("~/EC01/PCAI/PCAI Tool"), code("PCAI-Search.html")],
+        ["PCAI Study", "Your own learning: study pages, call prep (not PNIP)", code("~/EC01/PCAI/PCAI-Study"), code("Standard-Call-Prep.html")],
         ["Send to the work PC", "Text, links, files", code("to-work \"text\"  ·  to-work -f file"), a("https://ntfy.sh/" + (open(f"{H}/.config/to-work/topic").read().strip() if os.path.exists(f"{H}/.config/to-work/topic") else ""), "the work PC's channel")],
         ["<b>Résumé</b>", "Source + PDF", code("~/Projects/job-hunt/resume"), code("typst compile resume.typ")],
         ["Résumé project", "GitOps platform on Oracle, step by step", code("~/Projects/job-hunt/project-gitops-platform.md"), "Soma → Vault → Artifacts → GitOps Project Guide"],

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""pcai-inbox: Teams/SharePoint recordings → transcript, screenshots and a PCAI Tool study page, with nothing to do but
+"""pcai-inbox: Teams/SharePoint recordings → transcript and screenshots, with nothing to do but
 paste the link on the work PC (Moosa, 2026-11-02: "Teams transcribe should work automatically. I should just be able to
 give the url on my work pc. And I need screenshots too at necessary times of the video. I want to use this to update
-pcai tool").
+pcai tool"; PCAI Tool removed 2026-11-03 — study pages live in EC01/PCAI/PCAI-Study).
 
 Easiest on the work PC (signed in): open the recording and click the "Grab recording" bookmark (grab-recording.js). It
 saves <name>.vtt (Teams' transcript, with speakers) and <name>.txt (a fresh video link) straight into EC01\\PCAI\\inbox.
@@ -13,18 +13,16 @@ text file in EC01\\PCAI\\inbox, e.g. "Day 5 networking.txt". EC01 sends it to th
   2. screenshots where the screen changes (a new slide, a new window; at most 1 per 20 s, 80 in all), each named by its
      time → EC01/PCAI/screens/<name>/
   3. a transcript on the homelab (faster-whisper, 20-minute pieces) → EC01/PCAI/transcripts/<name>.txt
-  File names start with what the recording is for: [pnip] (PNIP / PCAI tool material), [me] (Moosa's own notes and
+  File names start with what the recording is for: [pnip] (PNIP material), [study] (PCAI study), [me] (Moosa's own notes and
   questions), [meeting] (team meeting: summary and actions). Claude reads that tag when Moosa asks about the recording.
-  Study pages are not made here: Moosa writes them with Claude, when and how he says (2026-11-02). `pcai-inbox page <name>`
-  stays for when he asks for a draft.
+  Study pages are not made here: Moosa writes them with Claude, when and how he says (2026-11-02).
 The inbox file is renamed .done (or .failed with the reason inside). Videos already downloaded (.mp4 in the inbox) work too.
-  pcai-inbox            process the inbox once          pcai-inbox page <name>     redo only the study page
+  pcai-inbox            process the inbox once
 """
 import base64, glob, html, json, os, re, subprocess, sys, time
 
 EC = os.path.expanduser("~/PCAI-work"); INBOX = os.path.expanduser("~/EC01/PCAI/inbox")   # outputs outside EC01: the work PC (send only) wiped them there on 2026-11-02
 WHISPER = os.path.expanduser("~/.local/share/pcai-whisper")
-TOOL = os.path.expanduser("~/EC01/PCAI/PCAI Tool"); SRC = f"{TOOL}/_build/source"
 LAPTOP = "moosa@192.168.10.30"
 
 
@@ -95,88 +93,6 @@ def transcribe(video, name):
     return open(dst).read()
 
 
-ASK = """You turn a recorded HPE PCAI (Private Cloud AI) knowledge-transfer session into a study page for a network TC.
-Return ONLY JSON: {"title": short title, "lede": one sentence, "tldr": [8-12 must-remember facts, each one sentence, specific
-numbers/VLANs/ports/commands kept exactly], "sections": [{"title": ..., "start": "h:mm:ss where it begins", "points": [facts]}],
-"qa": [{"q": a question a TC would be asked, "a": the answer}]}. Use only what the transcript says; when the transcript is
-unclear on a value, add " (verify)" to it. 6-12 sections, 8-15 questions. Transcript (lines start with [h:mm:ss]):
-"""
-
-
-def ask(prompt):
-    """One answer as JSON from the smartest free model that answers (busy or slow → the next, three rounds)."""
-    last = ""
-    for rnd in range(3):
-        for model in ("glm-5.3", "qwen3.8-max", "gemini-3.8-flash", "auto"):
-            r = sh(["ssh", "-o", "ConnectTimeout=10", LAPTOP, f"FREELLM_MODEL={model} FREELLM_MAX=3000 ~/.local/bin/freellm"],
-                   input=prompt, timeout=300)
-            t = re.sub(r"^```(?:json)?|```$", "", r.stdout.strip(), flags=re.M)
-            m = re.search(r"\{.*\}", t, re.S)
-            if m:
-                try: return json.loads(m.group(0))
-                except ValueError: last = f"{model}: unreadable JSON"
-            else: last = f"{model}: " + (r.stdout or r.stderr)[-160:]
-        time.sleep(30 * (rnd + 1))
-    raise RuntimeError("no model answered; last: " + last)
-
-
-def study(name, transcript):
-    """The transcript in 15-minute pieces (the free models cut off long answers at 60 s), merged into one study page."""
-    pieces, cur, start = [], [], 0
-    for line in transcript.splitlines():
-        t = secs(line[1:line.find("]")]) if line.startswith("[") else start
-        if t - start >= 900 and cur: pieces.append("\n".join(cur)); cur, start = [], t
-        cur.append(line)
-    if cur: pieces.append("\n".join(cur))
-    out = {"title": "", "lede": "", "tldr": [], "sections": [], "qa": []}
-    for k, p in enumerate(pieces):
-        part = ask(ASK.replace("8-12 must-remember", "3-5 must-remember").replace("6-12 sections, 8-15 questions", "1-3 sections, 2-4 questions")
-                   + f"(part {k + 1} of {len(pieces)})\n" + p)
-        out["title"] = out["title"] or part.get("title", ""); out["lede"] = out["lede"] or part.get("lede", "")
-        for key in ("tldr", "sections", "qa"): out[key] += part.get(key, [])
-    out["title"] = out["title"] or name
-    return out
-
-
-def secs(hms):
-    p = [int(x) for x in re.findall(r"\d+", hms or "0")][-3:]; p = [0] * (3 - len(p)) + p; return p[0] * 3600 + p[1] * 60 + p[2]
-
-
-def page(name, s, shots):
-    tpl = open(f"{SRC}/PCAI-Day4-Deployment.html").read()
-    i = tpl.find('<div class="wrap study">'); m = tpl.find("</main>"); head, tail = tpl[:i], tpl[m + len("</main></div>"):]
-    fn = f"PCAI-Rec-{slug(name)}.html"
-    head = re.sub(r"<title>[^<]*</title>", f"<title>PCAI · {html.escape(s['title'])}</title>", head)
-    head = head.replace(' class="here" aria-current="page"', "").replace(" selected", "")
-    e = lambda x: html.escape(str(x)).replace("(verify)", '<span class="v">verify</span>')
-    shot_t = [(secs(os.path.basename(f)[:-4].replace("-", ":")), f) for f in shots]
-    def pics(a, b):
-        out = [f for t, f in shot_t if a <= t < b][:4]
-        return "".join(f'<figure><img loading="lazy" style="width:100%;border-radius:10px" src="data:image/jpeg;base64,'
-                       f'{base64.b64encode(open(f, "rb").read()).decode()}"><figcaption>{os.path.basename(f)[:-4].replace("-", ":")}</figcaption></figure>' for f in out)
-    secs_ = s.get("sections", []); starts = [secs(x.get("start")) for x in secs_] + [10 ** 9]
-    body = f'<section id="tldr" data-chip="Must-remember"><h2>Must-remember</h2><ol class="tldr">{"".join(f"<li>{e(x)}</li>" for x in s.get("tldr", []))}</ol></section>'
-    for k, x in enumerate(secs_):
-        body += (f'<section id="s{k}" data-chip="{e(x["title"])}"><h2>{e(x["title"])} <small class="mut">{e(x.get("start", ""))}</small></h2>'
-                 f'<ul>{"".join(f"<li>{e(p)}</li>" for p in x.get("points", []))}</ul>'
-                 f'<div class="cards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px">{pics(starts[k], starts[k + 1])}</div></section>')
-    body += '<section id="qa" data-chip="Likely questions"><h2>Likely questions</h2>' + "".join(
-        f'<details><summary>{e(q["q"])}</summary><p>{e(q["a"])}</p></details>' for q in s.get("qa", [])) + "</section>"
-    toc = '<nav class="toc"><div class="tt">On this page</div><a href="#tldr">Must-remember</a>' + "".join(
-        f'<a href="#s{k}">{e(x["title"])}</a>' for k, x in enumerate(secs_)) + '<a href="#qa">Likely questions</a></nav>'
-    hero = (f'<header class="hero"><div class="eyebrow">Recording · transcribed on the homelab</div><h1>{e(s["title"])}</h1>'
-            f'<p class="lede">{e(s.get("lede", ""))}</p></header>')
-    open(f"{SRC}/{fn}", "w").write(head + '<div class="wrap study">' + toc + '<main class="ref">' + hero + body + "</main></div>" + tail)
-    b = open(f"{TOOL}/_build/build.py").read()
-    if fn not in b:
-        a = '    ("PCAI-Network-Walkthroughs.html", "nw", "Network walkthroughs"),\n'
-        code = "r" + format(abs(hash(fn)) % 10 ** 6, "06d")
-        b = b.replace(a, a + f'    ("{fn}", "{code}", {json.dumps(s["title"][:40])}),\n'); open(f"{TOOL}/_build/build.py", "w").write(b)
-    r = sh(["python3", "_build/build.py"], cwd=TOOL)
-    if r.returncode: raise RuntimeError("PCAI Tool build failed: " + r.stderr[-300:])
-    return fn
-
-
 def vtt(path, name):
     """Teams .vtt → the transcript format used everywhere here: [h:mm:ss] Speaker: text"""
     out, t, who = [], None, ""
@@ -220,9 +136,4 @@ def run():
 
 
 if __name__ == "__main__":
-    if sys.argv[1:2] == ["page"]:
-        n = sys.argv[2]; v = (glob.glob(os.path.expanduser(f"~/EC01/**/{glob.escape(n)}.mp4"), recursive=True) or [None])[0]
-        shots = screens(v, n) if v else sorted(glob.glob(f"{EC}/screens/{n}/*.jpg"))
-        print(page(n, study(n, open(f"{EC}/transcripts/{n}.txt").read()), shots))
-    else:
-        for m in run(): print(m)
+    for m in run(): print(m)
