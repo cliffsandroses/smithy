@@ -8,8 +8,8 @@
 #            laptop is hot (>= 85 °C); otherwise it keeps running at the lowest priority. Clip jobs frozen (resume after).
 #   call   - the microphone is in use (a call or a recording)       -> heavy background work frozen, OpenClaw low priority
 #   dev    - Claude Code busy in the last minute                     -> OpenClaw low priority
-#   idle   - none of the above for 10 minutes                        -> OpenClaw and Syncthing on; clips get made
-# Memory emergency: under 500 MB free and OpenClaw not in use -> OpenClaw stopped until memory recovers.
+#   idle   - none of the above for 1 minute                          -> OpenClaw and Syncthing on; clips get made
+# lowmem - memory emergency: under 500 MB free and OpenClaw not in use -> OpenClaw stopped until 1.5 GB is free.
 # Guards in every mode: on battery below 25 %, hotter than 90 °C, or under 600 MB free memory, no clip jobs start and
 # running ones are frozen.
 # The laptop has 7 GB; OpenClaw alone takes ~1.2 GB, which made Remote Play stutter.
@@ -56,7 +56,7 @@ mic() { pactl list source-outputs short 2>/dev/null | grep -q . ; }
 tight() { [ "$mem" -lt 2500 ] || [ "$temp" -ge 85 ]; }
 guard() { { [ "$ac" = 0 ] && [ "$bat" -lt 25 ]; } || [ "$temp" -ge 90 ] || [ "$mem" -lt 600 ]; }
 mode=idle; why="nothing busy"
-if [ "$mem" -lt 500 ] && ! inuse; then mode=stream; why="memory nearly gone (${mem} MB free): OpenClaw stopped to free ~600 MB"   # Moosa 2026-11-02: laptop lagging, RAM+swap full
+if [ "$mem" -lt 500 ] && ! inuse; then mode=lowmem; why="memory nearly gone (${mem} MB free): OpenClaw stopped to free ~600 MB"   # Moosa 2026-11-02: laptop lagging, RAM+swap full
 elif inuse; then mode=claw; why="OpenClaw in use or held"
 elif chiaki_live; then if tight; then mode=stream; why="Remote Play streaming, ${mem} MB free, ${temp} °C: OpenClaw stopped"; else mode=stream-light; why="Remote Play streaming with room to spare (${mem} MB, ${temp} °C): OpenClaw kept at lowest priority"; fi
 elif playing; then if tight; then mode=stream; why="video playing, resources tight"; else mode=stream-light; why="video playing, resources fine"; fi
@@ -67,8 +67,8 @@ guard && why="$why; guard on (battery ${bat}%/AC ${ac}, ${temp} °C, ${mem} MB):
 if [ $WHY = 1 ]; then echo "mode now: $(cat "$S/mode" 2>/dev/null || echo idle) → would be: $mode — $why"; echo "chiaki ${chiaki_cpu}% CPU · claude ${claude_cpu}% · ${mem} MB free · ${temp} °C · battery ${bat}% (AC ${ac})"; exit 0; fi
 [ "$mode" != idle ] && echo "$now" > "$S/busy"
 last=$(cat "$S/busy" 2>/dev/null || echo 0); old=$(cat "$S/mode" 2>/dev/null || echo idle)
-[ "$mode" = idle ] && [ $((now - last)) -lt 600 ] && [ "$old" != claw ] && [ "$old" != none ] && mode=$old   # wait 10 min of quiet before waking OpenClaw
-[ "$mode" = idle ] && [ "$old" = stream ] && [ "$mem" -lt 1500 ] && mode=stream   # only wake OpenClaw when there is room for it
+[ "$mode" = idle ] && [ $((now - last)) -lt 60 ] && [ "$old" != claw ] && [ "$old" != none ] && mode=$old   # wait 1 min of quiet before waking OpenClaw (Moosa 2026-11-03: shorten the 10 min wait)
+[ "$mode" = idle ] && { [ "$old" = stream ] || [ "$old" = lowmem ]; } && [ "$mem" -lt 1500 ] && mode=$old   # only wake OpenClaw when there is room for it
 # guards: no heavy background jobs on low battery, heat or low memory
 if guard; then systemctl --user freeze clipper-auto clip-now 2>/dev/null
 elif [ "$mode" = idle ] && [ "$old" = idle ] && [ $((now - $(cat "$S/clip" 2>/dev/null || echo 0))) -gt 1800 ]; then
@@ -82,11 +82,11 @@ case $mode in
           # (OpenClaw's chat runs there), the terminals and Claude Code, the desktop, Syncthing and KDE Connect.
           for a in $CLOSE; do pkill -TERM -x "$a" 2>/dev/null && echo "$a" >> "$S/closed"; done
           systemctl --user freeze clipper-auto clip-now 2>/dev/null; balooctl6 suspend >/dev/null 2>&1 ;;
-  stream) systemctl --user stop $CW; systemctl --user freeze clipper-auto clip-now 2>/dev/null ;;   # frozen, not lost
+  stream|lowmem) systemctl --user stop $CW; systemctl --user freeze clipper-auto clip-now 2>/dev/null ;;   # frozen, not lost
   stream-light) systemctl --user start $CW; weight 1; systemctl --user freeze clipper-auto clip-now 2>/dev/null ;;
   call)   systemctl --user start $CW; weight 10; systemctl --user freeze clipper-auto clip-now 2>/dev/null; balooctl6 suspend >/dev/null 2>&1 ;;
   dev)    systemctl --user start $CW; weight 20; systemctl --user thaw clipper-auto clip-now 2>/dev/null; systemctl --user start syncthing ;;
   idle)   systemctl --user thaw clipper-auto clip-now 2>/dev/null; systemctl --user start $CW syncthing; weight 100; balooctl6 resume >/dev/null 2>&1 ;;
 esac
 logger -t automode "$old -> $mode: $why"
-notify-send -a Automode "Mode: $mode" "$(case $mode in claw) echo "OpenClaw on, first priority";; stream) echo "OpenClaw paused";; stream-light) echo "OpenClaw kept, lowest priority";; call) echo "Background work paused for your call";; dev) echo "OpenClaw on, low priority";; *) echo "OpenClaw on";; esac)" 2>/dev/null || true
+notify-send -a Automode "Mode: $mode" "$(case $mode in claw) echo "OpenClaw on, first priority";; stream) echo "OpenClaw paused";; lowmem) echo "Memory low: OpenClaw paused until 1.5 GB is free";; stream-light) echo "OpenClaw kept, lowest priority";; call) echo "Background work paused for your call";; dev) echo "OpenClaw on, low priority";; *) echo "OpenClaw on";; esac)" 2>/dev/null || true
