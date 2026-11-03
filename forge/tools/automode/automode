@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Automatic modes (Moosa, 2026-10-25; resource-aware 2026-11-02). Every 20 s (automode.timer):
+# Automatic modes (Moosa, 2026-10-25; resource-aware 2026-11-02). Every 2 s (automode.service loop; was a 20 s timer):
 #   claw   - OpenClaw in use (a message handled in the last 15 min) or `automode claw [min]` -> OpenClaw on, first call on
 #            CPU and disk, background work stopped (clip jobs, file indexing), other apps closed (list in CLOSE)
 #   stream - Remote Play ACTUALLY streaming (Chiaki connected to the console or decoding video), or a video player playing.
