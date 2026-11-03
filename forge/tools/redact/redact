@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""redact — black out personal details in a PDF/DOCX/ODT, offline, before you share it with anyone (or any AI).
+
+  redact contract.pdf            → contract-redacted.pdf next to it, plus a count of what was hidden
+  redact --show contract.pdf     → same, and also prints each hidden value (only you see your terminal)
+  redact --terms                 → open your private word list (names, address, employer IDs…) in the editor
+
+The output is images of the pages with black boxes burned in: the hidden text is gone, not just covered, and
+nothing else (no text layer, no metadata) survives. Automatic: e-mail, phone, Aadhaar, PAN, IFSC, bank account,
+card numbers, PIN code, dates, passport. Plus every line of ~/.config/redact/terms.txt (one name/phrase per line).
+Agents never read terms.txt (Moosa, 2026-11-03: "I don't want you having my identity").
+Needs: poppler (pdftotext, pdftoppm), ImageMagick, LibreOffice for .docx/.odt. Scanned PDFs (no text layer)
+are refused: use LibreOffice Draw → Tools → Redact for those.
+"""
+import html, os, re, shutil, subprocess, sys, tempfile
+
+TERMS = os.environ.get("REDACT_TERMS") or os.path.expanduser("~/.config/redact/terms.txt"); DPI = 150
+AUTO = {
+    "email": r"[\w.+-]+@[\w-]+\.[\w.-]+",
+    "phone": r"(?:\+?\d{1,3}[\s-]?)?(?:\(?\d{2,5}\)?[\s-]?)?\d{3,5}[\s-]?\d{4,5}",
+    "aadhaar": r"\b\d{4}\s?\d{4}\s?\d{4}\b",
+    "pan": r"\b[A-Z]{5}\d{4}[A-Z]\b",
+    "ifsc": r"\b[A-Z]{4}0[A-Z0-9]{6}\b",
+    "account/card": r"\b\d{9,18}\b|\b(?:\d{4}[\s-]){3}\d{4}\b",
+    "pin code": r"\b\d{3}\s?\d{3}\b",
+    "date": r"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b|\b\d{1,2}(?:st|nd|rd|th)?\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*,?\s+\d{4}\b",
+    "passport": r"\b[A-Z]\d{7}\b",
+}
+
+
+def die(m): print("redact:", m, file=sys.stderr); sys.exit(1)
+
+
+def terms():
+    if not os.path.exists(TERMS): return []
+    return [l.strip() for l in open(TERMS) if l.strip() and not l.startswith("#")]
+
+
+def pages(pdf):
+    x = subprocess.run(["pdftotext", "-bbox-layout", pdf, "-"], capture_output=True, text=True).stdout
+    out = []
+    for p in re.findall(r"<page (.*?)</page>", x, re.S):
+        w, h = (float(v) for v in re.search(r'width="([\d.]+)" height="([\d.]+)"', p).groups())
+        words = [(float(a), float(b), float(c), float(d), html.unescape(t))
+                 for a, b, c, d, t in re.findall(r'<word xMin="([\d.]+)" yMin="([\d.]+)" xMax="([\d.]+)" yMax="([\d.]+)">(.*?)</word>', p)]
+        out.append((w, h, words))
+    return out
+
+
+def hits(words, mine):
+    text, spans = "", []
+    for i, wd in enumerate(words):
+        spans.append((len(text), len(text) + len(wd[4]))); text += wd[4] + " "
+    found = []
+    pats = list(AUTO.items()) + [("your list", r"(?<!\w)" + r"\s+".join(map(re.escape, t.split())) + r"(?!\w)") for t in mine]
+    for kind, pat in pats:
+        for m in re.finditer(pat, text, 0 if kind != "your list" else re.I):
+            if kind == "phone" and len(re.sub(r"\D", "", m.group())) < 10: continue
+            idx = [i for i, (a, b) in enumerate(spans) if a < m.end() and b > m.start()]
+            if idx: found.append((kind, m.group().strip(), idx))
+    return found
+
+
+def main():
+    a = sys.argv[1:]
+    if a == ["--terms"]:
+        os.makedirs(os.path.dirname(TERMS), mode=0o700, exist_ok=True)
+        if not os.path.exists(TERMS):
+            open(TERMS, "w").write("# One per line: your name, family names, address lines, employer, employee ID, salary figures…\n"); os.chmod(TERMS, 0o600)
+        os.execvp(os.environ.get("VISUAL") or os.environ.get("EDITOR") or "nano", [os.environ.get("EDITOR") or "nano", TERMS])
+    show = "--show" in a; a = [x for x in a if x != "--show"]
+    if len(a) != 1 or not os.path.isfile(a[0]): die(__doc__.strip().splitlines()[2].strip() + "\n  (see redact --help in the source)")
+    src = os.path.abspath(a[0]); base, ext = os.path.splitext(src); dst = base + "-redacted.pdf"
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf = src
+        if ext.lower() != ".pdf":
+            subprocess.run(["soffice", "--headless", "--convert-to", "pdf", "--outdir", tmp, src], capture_output=True)
+            pdf = os.path.join(tmp, os.path.basename(base) + ".pdf")
+            if not os.path.exists(pdf): die("LibreOffice could not convert " + src)
+        pg = pages(pdf)
+        if not any(w for _, _, w in pg): die("no text layer (a scan?). Use LibreOffice Draw → Tools → Redact for this one.")
+        subprocess.run(["pdftoppm", "-r", str(DPI), "-png", pdf, f"{tmp}/p"], check=True)
+        imgs = sorted(f for f in os.listdir(tmp) if f.startswith("p") and f.endswith(".png"))
+        s = DPI / 72; count = {}; mine = terms(); outs = []
+        for n, ((w, h, words), img) in enumerate(zip(pg, imgs), 1):
+            draw = []
+            for kind, val, idx in hits(words, mine):
+                count[kind] = count.get(kind, 0) + 1
+                if show: print(f"  p{n} {kind}: {val}")
+                for i in idx:
+                    x0, y0, x1, y1, _ = words[i]; draw += ["-draw", f"rectangle {x0*s-2:.0f},{y0*s-2:.0f} {x1*s+2:.0f},{y1*s+2:.0f}"]
+            o = f"{tmp}/r{n:04d}.png"
+            subprocess.run(["magick", f"{tmp}/{img}", "-fill", "black", *draw, "-strip", o], check=True); outs.append(o)
+        subprocess.run(["magick", *outs, "-strip", "-density", str(DPI), "-units", "PixelsPerInch", dst], check=True)
+    print(f"redact: {dst}")
+    print("  hidden: " + (", ".join(f"{v} {k}" for k, v in sorted(count.items())) or "nothing matched"))
+    print("  your list: " + (f"{len(mine)} entries" if mine else "empty — run `redact --terms` to add your name, address, IDs"))
+    print("  Check every page before sharing: the automatic patterns can miss things.")
+
+
+if __name__ == "__main__": main()
