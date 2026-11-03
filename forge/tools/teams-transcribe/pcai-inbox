@@ -66,8 +66,26 @@ def screens(video, name):
     return sorted(out)
 
 
+def on_laptop(video, dst):
+    """Moosa 2026-11-03: CPU-heavy, low-RAM jobs go to the laptop (stronger CPU). Capped at 2 GB and 6 of 12 threads so it
+    stays usable and cool; any failure (laptop asleep, off the LAN) falls back to the homelab run below."""
+    if sh(["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", LAPTOP, "true"]).returncode: return False
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        if sh(["ffmpeg", "-loglevel", "error", "-i", video, "-vn", "-ac", "1", "-ar", "16000", "-f", "segment",
+               "-segment_time", "1200", f"{tmp}/p%03d.wav"]).returncode: return False
+        ps = sorted(os.listdir(tmp)); rd = f".cache/pcai-tx-{os.getpid()}"
+        if sh(["ssh", LAPTOP, f"mkdir -p {rd}"]).returncode or sh(["scp", "-q", *[f"{tmp}/{p}" for p in ps], f"{LAPTOP}:{rd}/"]).returncode: return False
+        args = " ".join(f"{k*1200} {rd}/{p}" for k, p in enumerate(ps))
+        r = sh(["ssh", LAPTOP, f"systemd-run --user --scope -q -p MemoryMax=2G -p CPUQuota=600% nice -n 10 "
+                f"~/.local/share/whisper-venv/bin/python ~/.local/share/whisper-venv/laptop-whisper.py {args}; rm -rf {rd}"], timeout=6 * 3600)
+    if r.returncode or not r.stdout.strip(): return False
+    open(dst, "w").write(r.stdout); return True
+
+
 def transcribe(video, name):
     dst = f"{EC}/transcripts/{name}.txt"
+    if not os.path.exists(dst) and on_laptop(video, dst): print("transcribed on the laptop:", name)
     if not os.path.exists(dst):
         r = sh(["systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G", "nice", "-n", "15",
                 f"{WHISPER}/bin/python", f"{WHISPER}/transcribe.py", video], timeout=6 * 3600)
