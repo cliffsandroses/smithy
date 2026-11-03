@@ -24,7 +24,7 @@ tar -czf "$out/etc-config.tar.gz" --ignore-failed-read -C / \
     etc/pam.d etc/systemd/zram-generator.conf etc/sysctl.d etc/fstab etc/pacman.conf etc/mkinitcpio.conf \
     etc/udev/rules.d etc/X11/xorg.conf.d etc/modprobe.d etc/hostname etc/locale.conf etc/vconsole.conf 2>/dev/null || true
 ls /usr/local/bin > "$out/usr-local-bin.txt" 2>/dev/null || true
-command -v ludusavi >/dev/null && ludusavi backup --force >/dev/null
+command -v ludusavi >/dev/null && { ludusavi --try-manifest-update backup --force >/dev/null || echo "warning: ludusavi game-save backup failed; continuing" >&2; }   # 2026-11-03: a manifest timeout killed the whole backup
 date -Is > "$out/last-run.txt"
 
 # A second copy of the lists, independent of Kopia. Best-effort: the laptop may be away from home.
