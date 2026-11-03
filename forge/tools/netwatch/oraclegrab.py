@@ -21,7 +21,9 @@ ONLY = {4} if time.time() < 1793898000 else {4, 2}
 def oci(*a):
     r = subprocess.run([OCI, *a, "--output", "json"], capture_output=True, text=True, timeout=180,
                        env={**os.environ, "OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING": "True"})
-    if r.returncode: raise RuntimeError((r.stderr or r.stdout).strip().splitlines()[-1][:300] if (r.stderr or r.stdout).strip() else "oci failed")
+    if r.returncode:
+        out = (r.stderr or r.stdout).strip(); m = re.search(r'"message":\s*"([^"]+)"', out)   # oci prints a JSON error; keep its message, not the closing "}"
+        raise RuntimeError((m.group(1) if m else out.splitlines()[-1] if out else "oci failed")[:300])
     return json.loads(r.stdout or "{}").get("data", [])
 
 
