@@ -109,6 +109,7 @@ pre{margin:0;font:12px/1.55 var(--mono);white-space:pre-wrap;color:var(--ink2);o
 .ask .txt.open{display:block}
 .ask ul{list-style:none;margin:0;padding:0;display:grid;gap:6px}
 .ask li{display:grid;grid-template-columns:auto minmax(0,1fr);gap:2px 10px;align-items:start}
+.mtag{font-size:11px;padding:1px 7px;border-radius:99px;border:1px solid color-mix(in srgb,var(--ink) 25%,transparent);color:var(--muted);white-space:nowrap;margin-left:6px}
 .ask li .t{color:var(--ink)} .ask li .p{grid-column:2;font-size:12.5px;color:var(--muted);overflow-wrap:anywhere}
 .st{font:600 10px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;padding:5px 0;width:86px;text-align:center;border-radius:99px;border:1px solid currentColor;white-space:nowrap;margin-top:2px;background:color-mix(in srgb,currentColor 10%,transparent)}
 .ask{transition:background .2s}.ask:hover{background:color-mix(in srgb,var(--accent) 4%,transparent)}
@@ -252,7 +253,10 @@ function renderAsks(){
      with real to-dos are listed (plain chat turns are left out); each to-do shows its steps and how it is checked */
   const list = A.asks.filter(a => {
     const its = itemsOf(a);
-    if (!its.some(i => i.t && i.s !== "chat")) return false;
+    /* 2026-11-07, Moosa: "my asks are not loading". An ask whose steps were never written used to be
+       dropped here, so everything recent vanished. Now it is listed as "no steps yet" instead. */
+    const chatOnly = (a.items || []).length > 0 && !(a.items || []).some(i => i.t && i.s !== "chat");
+    if (chatOnly) return false;
     if (q && !((a.text||"") + " " + its.map(i => (i.t||"") + " " + (i.p||"")).join(" ") + " " + (a.title||"")).toLowerCase().includes(q)) return false;
     if (askF === "all") return true;
     return its.some(STEP[askF]);
@@ -268,7 +272,7 @@ function renderAsks(){
   /* Next up (2026-10-26): your three oldest waiting steps and Claude's three newest open ones, above everything else */
   { const all = A.asks.flatMap(a => itemsOf(a).map(i => ({ ...i, at: a.at, title: a.title || "" }))), age = i => (Date.now() - new Date(i.at || 0)) / 864e5;
     const mine = all.filter(i => STEP.waiting(i) && i.t).sort((x, y) => String(x.at).localeCompare(String(y.at))).slice(0, 3), cl = all.filter(i => STEP.todo(i) && i.t).sort((x, y) => String(y.at).localeCompare(String(x.at))).slice(0, 3);
-    const row = (i, who) => `<li><span class="cb ${who === "you" ? "wait" : ""}">${who === "you" ? "!" : ""}</span><div><span class="t">${esc(i.t || "")}</span>${age(i) > 2 && who === "you" ? ` <span class="stale">waiting ${Math.floor(age(i))} days</span>` : ""}<span class="p">${esc((i.p || "").slice(0, 140))}</span></div></li>`;
+    const row = (i, who) => `<li><span class="cb ${who === "you" ? "wait" : ""}">${who === "you" ? "!" : ""}</span><div><span class="t">${esc(i.t || "")}</span>${i.m ? ` <span class="mtag" title="Model and effort Claude suggests for this task">${esc(i.m)} · ${esc(i.e || "medium")}</span>` : ""}${age(i) > 2 && who === "you" ? ` <span class="stale">waiting ${Math.floor(age(i))} days</span>` : ""}<span class="p">${esc((i.p || "").slice(0, 140))}</span></div></li>`;
     $("#ask-next").innerHTML = mine.length + cl.length ? `<div class="panel nx"><b>Your next steps</b><ul class="chk">${mine.map(i => row(i, "you")).join("") || "<li>Nothing waits on you.</li>"}</ul></div><div class="panel nx"><b>Claude's next steps</b><ul class="chk">${cl.map(i => row(i, "claude")).join("") || "<li>Nothing open.</li>"}</ul></div>` : "" }
   const box = s => s === "done" || s === "said" ? '<span class="cb on" title="Done">✓</span>' : s === "waiting" ? '<span class="cb wait" title="Your turn">!</span>' : s === "blocked" ? '<span class="cb blk" title="Blocked">×</span>' : '<span class="cb" title="To do"></span>';
   const link = t => esc(t).replace(/(https?:\/\/[^\s<)"]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
@@ -280,7 +284,7 @@ function renderAsks(){
     return `<article class="ask ${st}"><header><h3>${esc(head(a))}</h3><span class="cnt">${real ? `${dn}/${real}` : ""}</span></header>
       <div class="meta"><span>${esc(when)}</span><span>${esc(a.where||"")}</span><span class="tag ${st}">${st === "wait" ? "Your turn" : st === "todo" ? "In progress" : "Done"}</span></div>
       ${real ? `<div class="prog" title="${dn} of ${real} done"><i style="width:${Math.round(dn / real * 100)}%"></i></div>` : ""}
-      <ul class="chk">${its.map(i => `<li class="${i.s === "done" || i.s === "said" ? "ok" : ""}">${box(i.s)}<div><span class="t">${esc(i.t || "The ask above")}</span>${i.s === "waiting" && (Date.now() - new Date(a.at || 0)) / 864e5 > 2 ? ` <span class="stale">waiting ${Math.floor((Date.now() - new Date(a.at || 0)) / 864e5)} days</span>` : ""}${i.steps && i.steps.length && !(i.s === "done" || i.s === "said") ? `<ol class="steps">${i.steps.map(x => `<li>${link(x)}</li>`).join("")}</ol>` : ""}${i.check ? `<span class="p chkby">Check: ${link(i.check)}</span>` : ""}${i.p ? `<span class="p">${link(i.p)}</span>` : ""}</div></li>`).join("")}</ul>
+      <ul class="chk">${its.map(i => `<li class="${i.s === "done" || i.s === "said" ? "ok" : ""}">${box(i.s)}<div><span class="t">${esc(i.t || "The ask above")}</span>${i.m && i.s !== "done" && i.s !== "said" ? ` <span class="mtag" title="Model and effort Claude suggests for this task">${esc(i.m)} · ${esc(i.e || "medium")}</span>` : ""}${i.s === "waiting" && (Date.now() - new Date(a.at || 0)) / 864e5 > 2 ? ` <span class="stale">waiting ${Math.floor((Date.now() - new Date(a.at || 0)) / 864e5)} days</span>` : ""}${i.steps && i.steps.length && !(i.s === "done" || i.s === "said") ? `<ol class="steps">${i.steps.map(x => `<li>${link(x)}</li>`).join("")}</ol>` : ""}${i.check ? `<span class="p chkby">Check: ${link(i.check)}</span>` : ""}${i.p ? `<span class="p">${link(i.p)}</span>` : ""}</div></li>`).join("")}</ul>
       ${askF !== "all" && hidden > 0 ? `<p class="hid">+ ${hidden} other step${hidden > 1 ? "s" : ""} (Everything shows them)</p>` : ""}<details class="said"><summary>What you asked</summary><p class="txt open">${esc(a.text||"")}</p></details></article>`;
   }).join("") + (list.length > shown.length ? `<div class="more">${list.length - shown.length} more: search to narrow them down.</div>` : "")
     : `<div class="empty">Nothing here with this filter.</div>`;
