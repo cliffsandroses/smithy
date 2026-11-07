@@ -7,6 +7,7 @@ changes. A few kB per check.
 import base64, datetime as dt, html, json, os, re, time, urllib.request
 
 D = os.path.expanduser("~/.local/share/netwatch"); STATE = f"{D}/routerwatch.json"
+os.makedirs(D, exist_ok=True)   # 2026-11-07: without this the save crashed, so no state was kept and no alert ever fired
 PAGE = os.path.expanduser("~/Projects/claude-artifacts/router-openwrt-watch.html")
 PHOTO = f"{D}/wr1300.jpg"
 UA = {"User-Agent": "routerwatch (homelab)", "Accept": "application/json"}
