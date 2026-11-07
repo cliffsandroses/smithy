@@ -104,6 +104,9 @@ def sample():
         import routerwatch; r = routerwatch.run(ntfy); r and print(r)
     except Exception as e: print("routerwatch failed:", type(e).__name__, e, file=sys.stderr)
     try:
+        import ps5watch; r = ps5watch.run(ntfy); r and print(r)
+    except Exception as e: print("ps5watch failed:", type(e).__name__, e, file=sys.stderr)
+    try:
         import backupmap; r = backupmap.run(); r and print(r)
     except Exception as e: print("backupmap failed:", type(e).__name__, e, file=sys.stderr)
     try:
