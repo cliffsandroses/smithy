@@ -3,7 +3,7 @@
 Reads the console's own firmware off the LAN, then the places a new PS5 exploit actually lands (the UMTX2
 host, etaHEN, the ELF loader, PS5Dev, the lua loader). Writes ~/Projects/claude-artifacts/ps5-jailbreak-watch.html
 (Soma -> Vault -> Artifacts) and alerts the phone when a line changes - above all when a release's supported
-firmware range grows past what the console runs. netwatch runs this every 12 hours. A few kB per check.
+firmware range grows past what the console runs. netwatch runs this every 6 hours. A few kB per check.
 
 The decision it answers: is this console's firmware inside any public exploit's supported range, yes or no.
 """
@@ -23,6 +23,8 @@ REPOS = [
     ("ps5dev", "PS5Dev UMTX jailbreak (the original chain)", "PS5Dev/PS5-UMTX-Jailbreak"),
     ("lua", "remote_lua_loader (where new bugs show up first)", "shahrilnet/remote_lua_loader"),
 ]
+# Scene news, so a new exploit shows up here even before a repo moves.
+FEEDS = [("wololo", "Scene news (wololo.net)", "https://wololo.net/feed/", "https://wololo.net/")]
 RANGE = re.compile(r"(\d+\.\d\d)\s*(?:-|to|–)\s*(\d+\.\d\d)")
 
 
@@ -74,16 +76,20 @@ def highest_supported():
     return best, src
 
 
-def checks():
+def checks(known_fw=None):
     out = []
     def add(key, name, url, state, good, note=""): out.append(dict(key=key, name=name, url=url, state=state, good=good, note=note))
 
     name, fw = console()
+    asleep = not fw
+    if asleep and known_fw:        # rest mode: the firmware it had last time is still the firmware it has
+        fw = known_fw
     cap, capsrc = highest_supported()
     inside = bool(fw and cap and float(fw) <= float(cap))
     add("console", f"This console{f' ({name})' if name else ''}", "https://www.playstation.com/",
         f"firmware {fw}" if fw else "not found on the LAN", False,
-        "Read straight off the console over the network." if fw else "Console asleep or on another network.")
+        ("Last known firmware; console was asleep this time." if asleep else "Read straight off the console over the network.")
+        if fw else "Console asleep or on another network, and no firmware seen yet.")
     add("verdict", "Is this firmware jailbreakable?", "https://umtx2.pages.dev/",
         ("YES, run UMTX2" if inside else f"NO - public chain stops at {cap}") if (fw and cap) else "unknown",
         inside, f"Highest public support: {cap} ({capsrc})." if cap else "")
@@ -101,6 +107,17 @@ def checks():
             except Exception as e:
                 st, url = "unreachable (%s)" % type(e).__name__, f"https://github.com/{repo}"
         add(key, label, url, st, False)
+
+    for key, label, feed, home in FEEDS:
+        try:
+            x = text(feed)
+            items = re.findall(r"<item>(.*?)</item>", x, re.S)
+            hit = next((i for i in items if re.search(r"ps5|playstation 5", i, re.I)), items[0] if items else "")
+            title = html.unescape(re.sub(r"<[^>]+>", "", (re.search(r"<title>(.*?)</title>", hit, re.S) or [None, ""])[1])).strip()
+            link = (re.search(r"<link>(.*?)</link>", hit, re.S) or [None, home])[1].strip()
+            add(key, label, link or home, (title or "no PS5 story")[:90], False, "Newest PS5 story on the scene feed.")
+        except Exception as e:
+            add(key, label, home, "unreachable (%s)" % type(e).__name__, False)
     return out
 
 
@@ -130,7 +147,7 @@ p.foot{{color:var(--mute);font-size:14px;margin-top:24px}}
 </style></head><body><main>
 <h1>PS5 · jailbreak watch</h1><div class="verdict">{html.escape(verdict)}</div><div class="when">checked {when}</div>
 <div class="list">{li}</div>
-<p class="foot">Checked twice a day by the homelab (netwatch); your phone gets an alert when a line changes.
+<p class="foot">Checked every few hours by the homelab (netwatch); your phone gets an alert when a line changes.
 The console's firmware is read off the LAN, so keep blocking PlayStation's update hosts: once it climbs, it never comes back down.</p>
 </main></body></html>"""
 
@@ -138,14 +155,19 @@ The console's firmware is read off the LAN, so keep blocking PlayStation's updat
 def run(notify, force=False):
     try: st = json.load(open(STATE))
     except (OSError, ValueError): st = {}
-    if not force and time.time() - st.get("at", 0) < 12 * 3600: return None
-    rows = checks(); when = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    if not force and time.time() - st.get("at", 0) < 6 * 3600: return None
+    rows = checks(st.get("fw")); when = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     old = st.get("rows", {}); new = {r["key"]: r["state"] for r in rows}
-    changed = [r for r in rows if old and old.get(r["key"]) != r["state"] and "unreachable" not in r["state"]]
+    # Never alert on "the console was asleep": only on real news about an exploit.
+    quiet = ("unknown", "not found on the LAN")
+    feeds = {k for k, *_ in FEEDS}   # news headlines change every day: shown on the page, never an alert
+    changed = [r for r in rows if old and old.get(r["key"]) != r["state"] and r["key"] not in feeds
+               and "unreachable" not in r["state"] and r["state"] not in quiet]
     big = [r for r in changed if r["key"] == "verdict"]
     if big: notify("PS5: jailbreak status changed", "; ".join(f"{r['name']}: {r['state']}" for r in big))
     elif changed: notify("PS5: jailbreak sources moved", "; ".join(f"{r['name']}: {r['state']}" for r in changed[:4]))
     os.makedirs(os.path.dirname(PAGE), exist_ok=True)
     open(PAGE + ".tmp", "w").write(page(rows, when)); os.replace(PAGE + ".tmp", PAGE)
-    json.dump({"at": time.time(), "rows": new}, open(STATE, "w"))
+    fw = next((r["state"].removeprefix("firmware ") for r in rows if r["key"] == "console" and r["state"].startswith("firmware ")), st.get("fw"))
+    json.dump({"at": time.time(), "rows": new, "fw": fw}, open(STATE, "w"))
     return f"ps5watch: {len(rows)} checked, {len(changed)} changed"
