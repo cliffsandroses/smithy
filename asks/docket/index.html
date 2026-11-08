@@ -134,7 +134,8 @@ function draw(){
       <ul class="chk nx">${steps.map(({a,i,idx})=>itemRow(a,i,idx).replace('<div class="body">','<div class="body">'+`<span class="where">${esc(head(a))}</span><br>`)).join("")||'<li>Nothing left.</li>'}</ul></div>`;
     return;
   }
-  $("#list").innerHTML=list.length?list.map(a=>{
+  const CAP=40, over=list.length-CAP;
+  $("#list").innerHTML=list.length?list.slice(0,CAP).map(a=>{
     const r=real(a), dn=r.filter(i=>["done","said"].includes(i.s)).length, k=rank(a);
     const st=k===0?"wait":k>=3?"done":"todo";
     return `<article class="ask ${st}" data-ask="${a.id}">
@@ -143,7 +144,7 @@ function draw(){
         <span>${esc(a.where||"")}</span><span>${r.length?dn+"/"+r.length+" done":"no steps yet"}</span></div>
       <ul class="chk">${a.items.map((i,idx)=>i.s==="chat"?"":itemRow(a,i,idx)).join("")}</ul>
       <div class="row" style="margin-top:8px"><button data-add>+ Add step</button><button data-askedit>Edit ask</button><button data-askdel>Delete ask</button></div>
-      ${a.text?`<details><summary style="color:var(--mut);font-size:12px;cursor:pointer">What was asked</summary><p class="p">${esc(a.text)}</p></details>`:""}
+      ${a.text?`<details data-full="${a.more?a.id:""}"><summary style="color:var(--mut);font-size:12px;cursor:pointer">What was asked</summary><p class="p">${esc(a.text)}${a.more?" …":""}</p></details>`:""}
     </article>`}).join(""):'<div class="empty">Nothing with this filter.</div>';
 }
 
@@ -183,6 +184,11 @@ document.addEventListener("click",async e=>{
       {label:"What was asked",name:"text",area:1,rows:5,value:A.text||""}],d=>api("ask.patch",{id:aid,...d}));
   if(e.target.closest("[data-askdel]")&&confirm("Delete this whole ask?")){await api("ask.delete",{id:aid});return load()}
 });
+document.addEventListener("toggle",async e=>{
+  const d=e.target; if(d.tagName!=="DETAILS"||!d.open||!d.dataset.full)return;
+  const id=d.dataset.full; d.dataset.full="";
+  try{const r=await fetch("/api/text?id="+id);const j=await r.json();d.querySelector("p").textContent=j.text}catch(_){}
+},true);
 document.addEventListener("change",async e=>{
   const s=e.target.closest("[data-set]"); if(!s)return;
   const li=e.target.closest("li[data-id]");

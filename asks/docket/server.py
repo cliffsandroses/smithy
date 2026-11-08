@@ -12,7 +12,7 @@ write to the same file; both sides see the same data.
 Every write: flock on ledger.json.lock, a dated .bak on the first write of the day, then an
 atomic replace. Unknown fields on an ask or item are preserved exactly.
 """
-import argparse, fcntl, json, os, shutil, sys, time, uuid
+import argparse, fcntl, gzip, json, os, shutil, sys, time, uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -132,7 +132,12 @@ class H(BaseHTTPRequestHandler):
             body = json.dumps(body).encode()
         elif isinstance(body, str):
             body = body.encode()
+        gz = len(body) > 2048 and "gzip" in (self.headers.get("Accept-Encoding") or "")
+        if gz:
+            body = gzip.compress(body, 5)
         self.send_response(code)
+        if gz:
+            self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
@@ -145,9 +150,22 @@ class H(BaseHTTPRequestHandler):
                 d = load()
             except Exception as e:
                 return self._send(500, {"error": str(e)})
-            asks = [dict(v, id=k) for k, v in d["asks"].items()]
+            asks = []
+            for k, v in d["asks"].items():
+                a = dict(v, id=k)
+                t = a.get("text") or ""
+                if len(t) > 300:          # keep the list small; /api/text?id= has the rest
+                    a["text"] = t[:300]
+                    a["more"] = True
+                asks.append(a)
             return self._send(200, {"asks": asks, "updated": int(time.time()),
                                     "ledger": str(LEDGER), "states": STATES})
+        if self.path.startswith("/api/text?"):
+            aid = self.path.split("id=", 1)[-1]
+            try:
+                return self._send(200, {"text": load()["asks"][aid].get("text") or ""})
+            except Exception:
+                return self._send(404, {"error": "no such ask"})
         path = "index.html" if self.path in ("/", "") else self.path.lstrip("/").split("?")[0]
         f = (HERE / path).resolve()
         if f.parent != HERE or not f.is_file():
