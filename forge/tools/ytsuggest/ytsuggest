@@ -1,52 +1,126 @@
 #!/usr/bin/env python3
-"""ytsuggest — daily "watch on the road" playlist that learns from what Moosa saves (2026-11-03).
-Never signs in: seeds are YouTube video ids from (1) an UNLISTED seed playlist he adds to (its public RSS feed),
-(2) ~/Projects/research/watch-later.txt, (3) the travel playlist. For each seed it reads the public watch page's
-related videos, scores what several seeds agree on, drops tutorials/seen ones, and sends a one-tap playlist link to ntfy.
-  ytsuggest            run once (crontab daily)
-  ytsuggest --dry      print, don't send
-Config: ~/.config/ytsuggest/playlist  (the seed playlist URL or id; optional)
+"""ytsuggest — commute playlist matched to Moosa's own road playlist (rewritten 2026-11-09).
+Never signs in. Taste profile = titles+channels of ~/Projects/research/travel-playlist.md (his road playlist, weight 2)
++ non-tutorial ~/Projects/research/watch-later.txt (weight 1) + optional unlisted seed playlist (~/.config/ytsuggest/playlist).
+Candidates = related videos of profile seeds + recent uploads (RSS) of the channels he keeps. Each candidate is scored by
+TF-IDF similarity to the profile, channel affinity, how many seeds agree, recency and a commute-friendly length; shorts,
+seen videos and junk (news, sport, devotional, reaction, tutorials) are dropped.
+  ytsuggest --dry       build and print, don't send
+  ytsuggest --prepare   build today's list and keep it (cron, early morning)
+  ytsuggest --trigger   send if Home Assistant shows person.moosa left home today (cron, every 5 min in the morning)
+  ytsuggest --fallback  send if nothing was sent today (cron, 10:00)
+  ytsuggest             build and send now
 """
-import json, os, random, re, subprocess, sys, time, urllib.request, collections, datetime, html
+import json, os, random, re, subprocess, sys, time, math, urllib.request, collections, datetime, html
 H = os.path.expanduser
 CFG = H('~/.config/ytsuggest'); os.makedirs(CFG, exist_ok=True)
-SEEN = f'{CFG}/seen.json'; OUT = H('~/Projects/research')
+SEEN = f'{CFG}/seen.json'; TODAY = f'{CFG}/today.json'; SENT = f'{CFG}/sent-day'; OUT = H('~/Projects/research')
 UA = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130 Safari/537.36', 'Accept-Language': 'en'}
-SKIP = re.compile(r'learn|tutorial|course|crash course|full stack|install|setup|how to|explained in \d+|#shorts|asmr|live stream|\blive\b|mix 20\d\d|compilation|getting started|development|insurance|certificat|exam prep|for beginners|review 20\d\d', re.I)
+SKIP = re.compile(r'learn|tutorial|course|crash course|full stack|install|setup|how to|explained in \d+|#shorts|#short\b|asmr|live stream|\blive\b|mix 20\d\d|compilation|getting started|development|insurance|certificat|exam prep|for beginners|review 20\d\d', re.I)
+JUNK = re.compile(r'highlights|full match|\bvs\.? |news|breaking|trump|biden|modi|election|midterm|interview|podcast|reaction|reacts?\b|bhajan|bhakti|songs?\b|lyrics|official (music )?video|trailer|teaser|motivation|top g|tate|snl|weekend update|prank|unboxing|\bep(isode)?\.? ?\d|part \d|#\w+|playlist|lofi|full movie|gameplay|walkthrough|stream', re.I)
+STOP = set('the a an of to and in is for on you your how what why with this that it its i my me are be was from by at as or but not all can will just about into who has have do does did we they he she his her our out up so if no one new more most every ever than then there their them what when where which while would could should after before over under very really here'.split())
+LEN_MIN, LEN_MAX = 6 * 60, 60 * 60          # commute: 6–60 min, sweet spot 10–35
 
 def get(url):
     return urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=25).read().decode('utf-8', 'ignore')
 
-def seed_playlist():
-    try: p = open(f'{CFG}/playlist').read().strip()
-    except FileNotFoundError: return []
-    pid = re.sub(r'.*[?&]list=([\w-]+).*', r'\1', p)
-    try: return re.findall(r'<yt:videoId>([\w-]{11})</yt:videoId>', get(f'https://www.youtube.com/feeds/videos.xml?playlist_id={pid}'))
-    except Exception as e: print('seed playlist unreadable:', e); return []
+def toks(s): return [t for t in re.findall(r"[a-z][a-z0-9']{2,}", html.unescape(s).lower()) if t not in STOP]
 
-def file_ids(path):
-    try: return [l.split('|')[0] for l in open(path) if re.match(r'^[\w-]{11}\|', l) and not re.search(r'\[(Deleted|Private) video\]', l) and not SKIP.search(l)]
-    except FileNotFoundError: return []
+def secs(s):
+    p = [int(x) for x in s.split(':')]; return sum(v * 60 ** i for i, v in enumerate(reversed(p)))
 
-def related(vid):
+def age_days(s):
+    m = re.search(r'(\d+)\s+(minute|hour|day|week|month|year)', s or '')
+    if not m: return None
+    return int(m.group(1)) * {'minute': 0, 'hour': 0, 'day': 1, 'week': 7, 'month': 30, 'year': 365}[m.group(2)]
+
+def junk(title):
+    t = html.unescape(title)
+    if SKIP.search(t) or JUNK.search(t): return True
+    letters = [c for c in t if c.isalpha()]
+    return bool(letters) and sum(c.isascii() for c in letters) / len(letters) < 0.8     # non-English titles
+
+# ---------- taste profile ----------
+def profile():
+    items = []                                                       # (id, title, channel, weight)
+    tp = f'{OUT}/travel-playlist.md'
+    if os.path.exists(tp):
+        for t, v, ch in re.findall(r'\[(.+?)\]\(https://youtu\.be/([\w-]{11})\)\s*—\s*(.*)', open(tp).read()):
+            items.append((v, t, ch.strip(), 2.0))
+    try:
+        for l in open(f'{OUT}/watch-later.txt'):
+            p = l.rstrip('\n').split('|')
+            if len(p) >= 3 and re.match(r'^[\w-]{11}$', p[0]) and not re.search(r'\[(Deleted|Private) video\]', p[1]) and not SKIP.search(p[1]):
+                items.append((p[0], p[1], p[2].strip(), 1.0))
+    except FileNotFoundError: pass
+    try:
+        pid = re.sub(r'.*[?&]list=([\w-]+).*', r'\1', open(f'{CFG}/playlist').read().strip())
+        x = get(f'https://www.youtube.com/feeds/videos.xml?playlist_id={pid}')
+        for v, t in re.findall(r'<yt:videoId>([\w-]{11})</yt:videoId>.*?<title>(.*?)</title>', x, re.S): items.append((v, t, '', 3.0))
+    except Exception: pass
+    return items
+
+class Tfidf:
+    def __init__(self, items):
+        docs = [toks(t + ' ' + c) for _, t, c, _ in items]
+        df = collections.Counter(w for d in docs for w in set(d)); n = len(docs) + 1
+        self.idf = lambda w: math.log(n / (1 + df.get(w, 0))) + 1
+        self.vecs = [self.vec(d) for d in docs]; self.w = [it[3] for it in items]
+    def vec(self, d):
+        c = collections.Counter(d); v = {w: k * self.idf(w) for w, k in c.items()}
+        nrm = math.sqrt(sum(x * x for x in v.values())) or 1; return {w: x / nrm for w, x in v.items()}
+    def sim(self, title):
+        q = self.vec(toks(title))
+        if not q: return 0.0
+        s = sorted((sum(q.get(w, 0) * x for w, x in v.items()) * wt for v, wt in zip(self.vecs, self.w)), reverse=True)
+        return sum(s[:5]) / 5                                         # mean of 5 nearest profile videos
+
+# ---------- candidates ----------
+def watch_page(vid):
+    """Related videos (id, title, channel, seconds|None, age_days|None) and the seed's channel id."""
     s = get(f'https://www.youtube.com/watch?v={vid}')
+    cid = (re.search(r'"channelId":"(UC[\w-]{22})"', s) or [None, None])[1]
     m = re.search(r'var ytInitialData = (\{.*?\});</script>', s, re.S)
-    if not m: return []
+    if not m: return [], cid
     out = []
+    def strings(o):
+        if isinstance(o, dict):
+            for v in o.values(): yield from strings(v)
+        elif isinstance(o, list):
+            for v in o: yield from strings(v)
+        elif isinstance(o, str): yield o
     def walk(o):
         if isinstance(o, dict):
             if 'lockupViewModel' in o:
                 l = o['lockupViewModel']; md = l.get('metadata', {}).get('lockupMetadataViewModel', {})
                 if l.get('contentType', 'LOCKUP_CONTENT_TYPE_VIDEO') == 'LOCKUP_CONTENT_TYPE_VIDEO':
                     rows = [p.get('text', {}).get('content', '') for r in md.get('metadata', {}).get('contentMetadataViewModel', {}).get('metadataRows', []) for p in r.get('metadataParts', [])]
-                    out.append((l.get('contentId'), md.get('title', {}).get('content', ''), rows[0] if rows else ''))
-            elif 'compactVideoRenderer' in o:
-                c = o['compactVideoRenderer']; out.append((c.get('videoId'), c.get('title', {}).get('simpleText', ''), ''))
+                    dur = next((secs(x) for x in strings(l.get('contentImage', {})) if re.fullmatch(r'\d{1,2}(:\d\d){1,2}', x)), None)
+                    out.append((l.get('contentId'), md.get('title', {}).get('content', ''), rows[0] if rows else '', dur, age_days(' '.join(rows))))
+                return
             for v in o.values(): walk(v)
         elif isinstance(o, list):
             for v in o: walk(v)
     walk(json.loads(m.group(1)).get('contents', {}).get('twoColumnWatchNextResults', {}).get('secondaryResults', {}))
-    return [x for x in out if x[0] and len(x[0]) == 11]
+    return [x for x in out if x[0] and len(x[0]) == 11], cid
+
+def channel_recent(cid):
+    x = get(f'https://www.youtube.com/feeds/videos.xml?channel_id={cid}'); now = datetime.datetime.now(datetime.timezone.utc); out = []
+    for e in re.findall(r'<entry>(.*?)</entry>', x, re.S):
+        v = re.search(r'<yt:videoId>([\w-]{11})', e); t = re.search(r'<title>(.*?)</title>', e); a = re.search(r'<name>(.*?)</name>', e)
+        p = re.search(r'<published>(.*?)</published>', e); link = re.search(r'<link rel="alternate" href="([^"]+)"', e)
+        if not (v and t): continue
+        if link and '/shorts/' in link.group(1): continue
+        d = (now - datetime.datetime.fromisoformat(p.group(1))).days if p else None
+        out.append((v.group(1), html.unescape(t.group(1)), html.unescape(a.group(1)) if a else '', None, d))
+    return out
+
+def is_short(vid):
+    """YouTube serves /shorts/<id> only for shorts; a normal video redirects to /watch."""
+    try:
+        r = urllib.request.urlopen(urllib.request.Request(f'https://www.youtube.com/shorts/{vid}', headers=UA, method='HEAD'), timeout=15)
+        return '/shorts/' in r.geturl()
+    except Exception: return False
 
 def saved_ids():
     """YouTube links inside his saved reels (laptop ~/reels-library) + yt-history.json — files only, no account."""
@@ -57,47 +131,106 @@ def saved_ids():
         if ids: open(f'{CFG}/saved.txt', 'w').write('\n'.join(ids) + '\n')
     except Exception: pass
     saved = open(f'{CFG}/saved.txt').read().split() if os.path.exists(f'{CFG}/saved.txt') else []
-    try: hist = [x['id'] for x in json.load(open(H('~/.local/share/soma-next/yt-history.json')))['items'] if not SKIP.search(x.get('title', ''))]
+    try: hist = [x['id'] for x in json.load(open(H('~/.local/share/soma-next/yt-history.json')))['items']]
     except Exception: hist = []
     return saved, hist
 
-def main():
-    dry = '--dry' in sys.argv
+def build():
     seen = set(json.load(open(SEEN))) if os.path.exists(SEEN) else set()
-    fresh = seed_playlist()                                        # what he saved most recently counts most
-    wl = file_ids(f'{OUT}/watch-later.txt'); travel = re.findall(r'youtu\.be/([\w-]{11})', open(f'{OUT}/travel-playlist.md').read()) if os.path.exists(f'{OUT}/travel-playlist.md') else []
+    items = profile(); tf = Tfidf(items)
     saved, hist = saved_ids()
-    add_now = [v for v in saved if v not in seen]                 # saved videos go straight into the playlist, once
-    seen |= set(wl) | set(travel) | set(fresh) | set(hist)
-    seeds = [(v, 3) for v in fresh[:8]] + [(v, 2) for v in random.sample(travel, min(7, len(travel)))] + [(v, 2) for v in saved] + [(v, 1) for v in random.sample(wl, min(4, len(wl)))] + [(v, 1) for v in random.sample(hist, min(3, len(hist)))]
-    score, info = collections.Counter(), {}
-    for vid, w in seeds:
-        try: rel = related(vid)
-        except Exception as e: print('skip', vid, e); continue
-        for rank, (rid, title, ch) in enumerate(rel[:15]):
-            if rid in seen or SKIP.search(title): continue
-            score[rid] += w * (1.0 - rank / 20); info[rid] = (title, ch)
-        time.sleep(random.uniform(2, 4))                          # gentle: one page every few seconds
+    seen |= {i[0] for i in items} | set(hist)
+    ch_aff = collections.Counter()
+    for _, _, c, w in items:
+        if c and c != 'NA': ch_aff[c] += w
+    # seeds: mostly the road playlist (what he actually picks for the commute), a few Watch Later
+    road = [i for i in items if i[3] >= 2]; wl = [i for i in items if i[3] < 2 and not junk(i[1])]
+    seeds = random.sample(road, min(10, len(road))) + random.sample(wl, min(4, len(wl)))
+    cand, agree, cids = {}, collections.Counter(), {}
+    for v, t, c, w in seeds:
+        try: rel, cid = watch_page(v)
+        except Exception as e: print('skip', v, e); continue
+        if cid and c: cids[c] = cid
+        for rank, r in enumerate(rel[:20]):
+            agree[r[0]] += w * (1 - rank / 25); cand.setdefault(r[0], r)
+        time.sleep(random.uniform(2, 4))
+    for c, cid in list(cids.items())[:10]:                               # recent uploads of channels he keeps
+        try:
+            for r in channel_recent(cid)[:6]:
+                if r[4] is not None and r[4] <= 120: cand.setdefault(r[0], r); agree[r[0]] += 0.5
+        except Exception as e: print('rss skip', c, e)
+        time.sleep(1)
+    scored = []
+    for vid, (_, title, ch, dur, age) in cand.items():
+        if vid in seen or junk(title): continue
+        if dur is not None and not LEN_MIN <= dur <= LEN_MAX: continue
+        sim = tf.sim(title + ' ' + ch)
+        lenf = 0.6 if dur is None else (1.0 if 600 <= dur <= 2100 else 0.7)
+        rec = 0.5 if age is None else (1.0 if age <= 30 else 0.8 if age <= 365 else 0.6 if age <= 1500 else 0.4)
+        aff = math.log1p(ch_aff.get(ch, 0))
+        s = 3.0 * sim + 0.6 * aff + 0.35 * min(agree[vid], 4) + 0.5 * rec + 0.5 * lenf
+        if sim < 0.04 and aff == 0: continue                              # nothing in common with his playlist
+        scored.append((s, vid, html.unescape(title), ch, dur, round(sim, 2)))
+    scored.sort(reverse=True)
     per_ch, pick = collections.Counter(), []
-    for rid, _ in score.most_common():
-        ch = info[rid][1]
-        if ch and per_ch[ch] >= 2: continue                        # variety: at most 2 per channel
-        per_ch[ch] += 1; pick.append(rid)
-        if len(pick) == 25: break
-    pick = (add_now + [v for v in pick if v not in add_now])[:25]
-    for v in add_now:
-        try: o = json.loads(get(f'https://www.youtube.com/oembed?url=https://youtu.be/{v}&format=json')); info[v] = (o['title'], o['author_name'])
-        except Exception: info[v] = ('(from your saved list)', '')
-    if not pick: print('nothing new'); return
-    link = 'https://www.youtube.com/watch_videos?video_ids=' + ','.join(pick)
-    day = datetime.date.today().isoformat()
-    md = [f'# Suggestions {day}', '', f'From {len(fresh)} new saves + {len(seeds) - min(8, len(fresh))} Watch Later/travel picks. **[Play all]({link})**', '']
-    md += [f'{i}. [{info[v][0]}](https://youtu.be/{v}) — {info[v][1]}' for i, v in enumerate(pick, 1)]
-    open(f'{OUT}/suggestions-latest.md', 'w').write('\n'.join(md) + '\n')
-    if dry: print('\n'.join(md)); return
-    json.dump(sorted(seen | set(pick)), open(SEEN, 'w'))
-    top = '\n'.join(f'• {html.unescape(info[v][0])[:70]}' for v in pick[:5])
-    subprocess.run([H('~/homelab/bin/ntfy-send'), 'info', f'🎬 {len(pick)} videos for today', f'{top}\n…and {len(pick) - 5} more. **Tap to play all.**', link])
-    print(len(pick), 'sent')
+    for row in scored:
+        if row[3] and per_ch[row[3]] >= 2: continue
+        if row[4] is None and is_short(row[1]): continue
+        per_ch[row[3]] += 1; pick.append(row)
+        if len(pick) == 20: break
+    add_now = [v for v in saved if v not in seen and v not in {p[1] for p in pick}]
+    for v in add_now[:5]:
+        try: o = json.loads(get(f'https://www.youtube.com/oembed?url=https://youtu.be/{v}&format=json')); pick.insert(0, (0, v, o['title'], o['author_name'], None, 'saved'))
+        except Exception: pass
+    return pick[:25]
+
+def write_md(pick):
+    link = 'https://www.youtube.com/watch_videos?video_ids=' + ','.join(p[1] for p in pick)
+    fm = lambda d: f'{d // 60} min' if d else '?'
+    md = [f'# Suggestions {datetime.date.today()}', '', f'Matched to your road playlist + Watch Later. **[Play all]({link})**', '']
+    md += [f'{i}. [{p[2]}](https://youtu.be/{p[1]}) — {p[3]} · {fm(p[4])} · match {p[5]}' for i, p in enumerate(pick, 1)]
+    open(f'{OUT}/suggestions-latest.md', 'w').write('\n'.join(md) + '\n'); return link, md
+
+def send(pick, why):
+    today = datetime.date.today().isoformat()
+    if os.path.exists(SENT) and open(SENT).read().strip() == today: print('already sent today'); return
+    link, _ = write_md(pick)
+    seen = set(json.load(open(SEEN))) if os.path.exists(SEEN) else set()
+    json.dump(sorted(seen | {p[1] for p in pick}), open(SEEN, 'w'))
+    top = '\n'.join(f'• {p[2][:70]}' for p in pick[:5])
+    subprocess.run([H('~/homelab/bin/ntfy-send'), 'info', f'🎬 {len(pick)} videos for the road', f'{top}\n…and {len(pick) - 5} more. **Tap to play all.** ({why})', link])
+    open(SENT, 'w').write(today); print(len(pick), 'sent', why)
+
+def left_home_today():
+    """Read-only look at Home Assistant's recorder: did person.moosa go home -> not home since 05:00 today?"""
+    q = ("import sqlite3,time,datetime as d\n"
+         "c=sqlite3.connect('file:/config/home-assistant_v2.db?mode=ro',uri=True)\n"
+         "t=d.datetime.combine(d.date.today(),d.time(5)).timestamp()\n"
+         "r=c.execute(\"select s.state,s.last_updated_ts from states s join states_meta m on s.metadata_id=m.metadata_id where m.entity_id='person.moosa' and s.last_updated_ts>? order by s.last_updated_ts\",(t-86400,)).fetchall()\n"
+         "prev=None\n"
+         "for st,ts in r:\n"
+         "  if prev=='home' and st not in('home','unknown','unavailable') and ts>t: print('LEFT');break\n"
+         "  if st not in('unknown','unavailable'): prev=st\n")
+    try: return 'LEFT' in subprocess.run(['docker', 'exec', 'homeassistant', 'python3', '-c', q], capture_output=True, text=True, timeout=30).stdout
+    except Exception: return False
+
+def todays_pick():
+    try:
+        d = json.load(open(TODAY))
+        if d['day'] == datetime.date.today().isoformat(): return d['pick']
+    except Exception: pass
+    pick = build(); json.dump({'day': datetime.date.today().isoformat(), 'pick': pick}, open(TODAY, 'w')); return pick
+
+def main():
+    a = sys.argv[1:]
+    if '--dry' in a:
+        pick = build(); print('\n'.join(write_md(pick)[1])); return
+    if '--prepare' in a: print(len(todays_pick()), 'prepared'); return
+    if '--trigger' in a:
+        if os.path.exists(SENT) and open(SENT).read().strip() == datetime.date.today().isoformat(): return
+        if left_home_today(): send(todays_pick(), 'you left home')
+        return
+    if '--fallback' in a: send(todays_pick(), 'no leave-home signal by 10:00'); return
+    send(todays_pick(), 'manual')
 
 if __name__ == '__main__': main()
