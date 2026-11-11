@@ -207,10 +207,13 @@ def left_home_today():
          "c=sqlite3.connect('file:/config/home-assistant_v2.db?mode=ro',uri=True)\n"
          "t=d.datetime.combine(d.date.today(),d.time(5)).timestamp()\n"
          "r=c.execute(\"select s.state,s.last_updated_ts from states s join states_meta m on s.metadata_id=m.metadata_id where m.entity_id='person.moosa' and s.last_updated_ts>? order by s.last_updated_ts\",(t-86400,)).fetchall()\n"
-         "prev=None\n"
+         "prev=None;since=None\n"
          "for st,ts in r:\n"
-         "  if prev=='home' and st not in('home','unknown','unavailable') and ts>t: print('LEFT');break\n"
-         "  if st not in('unknown','unavailable'): prev=st\n")
+         "  if st in('unknown','unavailable'): continue\n"
+         "  if prev=='home' and st!='home' and ts>t: since=ts\n"
+         "  if st=='home': since=None\n"
+         "  prev=st\n"
+         "if since and prev!='home' and time.time()-since>=600: print('LEFT')\n")   # away 10+ min and still away: not a roof trip or a GPS blip
     try: return 'LEFT' in subprocess.run(['docker', 'exec', 'homeassistant', 'python3', '-c', q], capture_output=True, text=True, timeout=30).stdout
     except Exception: return False
 
