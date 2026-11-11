@@ -32,7 +32,7 @@ import json, os, re, subprocess, time
 H = os.path.expanduser("~"); CFG = f"{H}/.oci/config"; STATE = f"{H}/.local/share/netwatch/oraclegrab.json"
 OCI = f"{H}/.local/bin/oci"; EVERY = 300; AUTH_EVERY = 3600; LIMITS_EVERY = 86400
 FREE_OCPU, FREE_MEM, FREE_GB, MIN_BOOT = 4, 24, 200, 50
-LAUNCH = (1, 4, 2)   # Moosa 2026-11-11: 1 core first (429s stopped rounds before it), then grow in place; GROW = (4, 3, 2); GB_PER_OCPU = 6; SHAPE = "VM.Standard.A1.Flex"
+LAUNCH = (1, 4, 2); GROW = (4, 3, 2); GB_PER_OCPU = 6; SHAPE = "VM.Standard.A1.Flex"   # 1 core first (Moosa 2026-11-11), then grow in place
 AD = "YTeh:AP-HYDERABAD-1-AD-1"
 SUBNET = "ocid1.subnet.oc1.ap-hyderabad-1.aaaaaaaateqymgryehyqktzgdlneu4lck5llzluqu2f5x6hc57mxlx3tyioa"   # public subnet-oracle-net
 IMAGE = "ocid1.image.oc1.ap-hyderabad-1.aaaaaaaamvzbsljz2ja6iegrtbe2hak37xuahdhb6uylqnw37iyq7zgvrjqq"     # same image as Moosa's stacks
