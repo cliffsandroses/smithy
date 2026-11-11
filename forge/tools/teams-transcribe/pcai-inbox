@@ -16,10 +16,10 @@ text file in EC01\\PCAI\\inbox, e.g. "Day 5 networking.txt". EC01 sends it to th
   File names start with what the recording is for: [pnip] (PNIP material), [study] (PCAI study), [me] (Moosa's own notes and
   questions), [meeting] (team meeting: summary and actions). Claude reads that tag when Moosa asks about the recording.
   Study pages are not made here: Moosa writes them with Claude, when and how he says (2026-11-02).
-The inbox file is renamed .done (or .failed with the reason inside). Videos already downloaded (.mp4 in the inbox) work too.
+The inbox is never written to (EC01 is receive-only): handled files are listed in ~/PCAI-work/.inbox-state.json. Videos already downloaded (.mp4 in the inbox) work too.
   pcai-inbox            process the inbox once
 """
-import base64, glob, html, json, os, re, subprocess, sys, time
+import base64, glob, html, json, os, re, shutil, subprocess, sys, time
 
 EC = os.path.expanduser("~/PCAI-work"); INBOX = os.path.expanduser("~/EC01/PCAI/inbox")   # outputs outside EC01: the work PC (send only) wiped them there on 2026-11-02
 WHISPER = os.path.expanduser("~/.local/share/pcai-whisper")
@@ -35,7 +35,7 @@ def slug(s): return re.sub(r"[^A-Za-z0-9]+", "-", s).strip("-")[:60] or time.str
 def download(src, name):
     out = f"{EC}/recordings/{name}.mp4"; os.makedirs(os.path.dirname(out), exist_ok=True)
     if os.path.exists(out): return out
-    if os.path.isfile(src): os.rename(src, out); return out
+    if os.path.isfile(src): shutil.copy2(src, out); return out          # copy: EC01 is receive-only, the inbox stays untouched
     url = re.sub(r"&?(altManifestMetadata|enableCdn)=[^&]*", "", src)       # the plain manifest gives the full-length stream
     r = sh(["ffmpeg", "-v", "error", "-y", "-i", url, "-c", "copy", out + ".part.mp4"], timeout=4 * 3600)
     if r.returncode: raise RuntimeError("download failed (the link may have expired; copy a fresh one): " + r.stderr[-300:])
@@ -128,7 +128,7 @@ def one(item):
     name = os.path.splitext(os.path.basename(item))[0]
     teams = f"{INBOX}/{name}.vtt"
     if os.path.exists(teams):                                          # Teams' own transcript: no Whisper needed
-        vtt(teams, name); os.rename(teams, teams + ".done")
+        vtt(teams, name); mark(teams, "done")
     if item.endswith(".vtt"): return f"{name}: Teams transcript ready"
     src = item if item.endswith(".mp4") else open(item).read().strip().split()[0]
     video = download(src, name); shots = screens(video, name); transcribe(video, name)
@@ -137,18 +137,32 @@ def one(item):
     return f"{name}: recording, {len(shots)} screenshots and a transcript ready"
 
 
+# EC01 is receive-only on the homelab (2026-11-11): nothing is written there. What has been handled is kept in
+# ~/PCAI-work/.inbox-state.json (path -> "done"/"failed: reason", keyed with the file's mtime so a re-sent file runs again).
+STATE = f"{EC}/.inbox-state.json"
+def _state():
+    try: return json.load(open(STATE))
+    except (OSError, ValueError): return {}
+def _key(f): return f"{os.path.basename(f)}@{int(os.path.getmtime(f))}"
+def mark(f, how):
+    s = _state(); s[_key(f)] = how; os.makedirs(EC, exist_ok=True)
+    json.dump(s, open(STATE + ".tmp", "w"), indent=1); os.replace(STATE + ".tmp", STATE)
+def handled(f): return _key(f) in _state()
+
+
 def run():
-    os.makedirs(INBOX, exist_ok=True); done = []
+    done = []
+    if not os.path.isdir(INBOX): return done
     vtts = [v for v in glob.glob(f"{INBOX}/*.vtt") if not any(os.path.exists(v[:-4] + e) for e in (".txt", ".url", ".mp4"))]   # transcript only
     for item in sorted(glob.glob(f"{INBOX}/*.txt") + glob.glob(f"{INBOX}/*.url") + glob.glob(f"{INBOX}/*.mp4") + vtts):
-        if time.time() - os.path.getmtime(item) < 30: continue        # still syncing
-        lock = item + ".working"
+        if time.time() - os.path.getmtime(item) < 30 or handled(item): continue   # still syncing / already handled
+        lock = f"{EC}/.working-{os.path.basename(item)}"
         if os.path.exists(lock): continue
-        open(lock, "w").close()
+        os.makedirs(EC, exist_ok=True); open(lock, "w").close()
         try:
-            msg = one(item); os.rename(item, item + ".done"); done.append(msg)
+            msg = one(item); mark(item, "done"); done.append(msg)
         except Exception as ex:
-            open(item + ".failed", "w").write(str(ex)); os.rename(item, item + ".failed.src"); done.append(f"{item}: {ex}")
+            mark(item, f"failed: {ex}"[:300]); done.append(f"{item}: {ex}")
         finally:
             os.path.exists(lock) and os.remove(lock)
     return done
