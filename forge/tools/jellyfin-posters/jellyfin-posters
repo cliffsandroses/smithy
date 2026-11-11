@@ -7,7 +7,7 @@
 #   3. waits, then counts again and says how many still have none
 # Run on the homelab: jellyfin-posters
 set -euo pipefail
-LAPTOP=moosa@192.168.10.30; PVE=root@192.168.10.13
+LAPTOP=moosa@100.64.0.5; PVE=root@192.168.10.13
 SOMA_PID=$(pgrep -f "soma/test/next/serve.py" | head -1)
 [ -n "$SOMA_PID" ] || { echo "Soma isn't running here."; exit 1; }
 

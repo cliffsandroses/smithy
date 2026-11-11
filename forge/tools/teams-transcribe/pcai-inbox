@@ -23,7 +23,7 @@ import base64, glob, html, json, os, re, subprocess, sys, time
 
 EC = os.path.expanduser("~/PCAI-work"); INBOX = os.path.expanduser("~/EC01/PCAI/inbox")   # outputs outside EC01: the work PC (send only) wiped them there on 2026-11-02
 WHISPER = os.path.expanduser("~/.local/share/pcai-whisper")
-LAPTOP = "moosa@192.168.10.30"
+LAPTOP = "moosa@100.64.0.5"   # tailnet address: works on wifi and ethernet (the ethernet one, .30, is dead when only wifi is up)
 
 
 def sh(cmd, **k): return subprocess.run(cmd, capture_output=True, text=True, **k)
@@ -106,6 +106,24 @@ def vtt(path, name):
     open(dst, "w").write("\n".join(out) + "\n"); return dst
 
 
+def merged(name, shots):
+    """Transcript with each screenshot placed at its moment (Moosa, 2026-11-10: the frames must sit with the words),
+    as text and as one page with the pictures inline: EC/merged/<name>.txt and .html"""
+    src = f"{EC}/transcripts/{name}.txt"
+    if not os.path.exists(src) or not shots: return
+    sec = lambda s: sum(int(x) * m for x, m in zip(re.split(r"[:-]", s), (3600, 60, 1)))
+    ev = [(sec(os.path.basename(f)[:-4]), 0, f) for f in shots]
+    ev += [(sec(m[1]), 1, l) for l in open(src).read().splitlines() if (m := re.match(r"\[(\d+:\d+:\d+)\]", l))]
+    os.makedirs(f"{EC}/merged", exist_ok=True); txt, page = [], []
+    for _, k, v in sorted(ev):
+        if k: txt.append(v); page.append(f"<p>{html.escape(v)}</p>")
+        else:
+            txt.append(f"    >>> SCREEN {v}")
+            page.append(f'<figure><img loading="lazy" src="data:image/jpeg;base64,{base64.b64encode(open(v, "rb").read()).decode()}"><figcaption>{os.path.basename(v)[:-4].replace("-", ":")}</figcaption></figure>')
+    open(f"{EC}/merged/{name}.txt", "w").write("\n".join(txt) + "\n")
+    open(f"{EC}/merged/{name}.html", "w").write(f'<!doctype html><meta charset="utf-8"><title>{html.escape(name)}</title><style>body{{background:#0b0c0f;color:#d8dbe2;font:15px/1.55 system-ui;max-width:980px;margin:24px auto;padding:0 16px}}img{{width:100%;border-radius:10px;border:1px solid #2a2d36}}figure{{margin:22px 0}}figcaption{{color:#8a90a0;font-size:12px}}p{{margin:6px 0}}</style><h1>{html.escape(name)}</h1>' + "\n".join(page))
+
+
 def one(item):
     name = os.path.splitext(os.path.basename(item))[0]
     teams = f"{INBOX}/{name}.vtt"
@@ -114,6 +132,7 @@ def one(item):
     if item.endswith(".vtt"): return f"{name}: Teams transcript ready"
     src = item if item.endswith(".mp4") else open(item).read().strip().split()[0]
     video = download(src, name); shots = screens(video, name); transcribe(video, name)
+    merged(name, shots)
     # no study page here: Moosa writes those with Claude, when and how he says (2026-11-02)
     return f"{name}: recording, {len(shots)} screenshots and a transcript ready"
 

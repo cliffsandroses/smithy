@@ -7,11 +7,14 @@ S=${XDG_STATE_HOME:-$HOME/.local/state}; mkdir -p "$S"; F="$S/agent-switch"
 H=$HOME/.hermes/hermes-agent/hermes
 hermes_stop() { systemctl --user stop hermes-gateway 2>/dev/null; "$H" gateway stop >/dev/null 2>&1; pkill -f "hermes gateway run" 2>/dev/null; true; }
 hermes_start() {
-  if systemctl --user cat hermes-gateway >/dev/null 2>&1; then systemctl --user start hermes-gateway
+  if systemctl --user cat hermes-gateway >/dev/null 2>&1; then systemctl --user start hermes-gateway hermes-dashboard
   else systemd-run --user --unit=hermes-gateway --collect "$H" gateway run >/dev/null; fi; }
+# A start from the switch (or Helm) counts as "in use" for 30 min, so automode's low-memory pause doesn't stop it again
+# straight away (2026-11-10: Helm couldn't turn Hermes on while automode was in lowmem).
+[ "${1:-}" = openclaw ] || [ "${1:-}" = hermes ] && { mkdir -p "$S/automode"; echo $(( $(date +%s) + 1800 )) > "$S/automode/hold"; }
 case ${1:-} in
-  openclaw) hermes_stop; echo openclaw > "$F"; systemctl --user start openclaw-gateway ;;
-  hermes)   systemctl --user stop openclaw-gateway; echo hermes > "$F"; hermes_start ;;
+  openclaw) echo openclaw > "$F"; hermes_stop; systemctl --user stop hermes-dashboard 2>/dev/null; systemctl --user start openclaw-gateway ;;
+  hermes)   echo hermes > "$F"; systemctl --user stop openclaw-gateway; hermes_start ;;   # choice saved first: automode reads it every 2 s (2026-11-09 race)
   "") cat "$F" 2>/dev/null || echo openclaw; exit ;;
   *) echo "agent-switch openclaw | hermes"; exit 1 ;;
 esac

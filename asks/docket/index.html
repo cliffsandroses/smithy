@@ -31,6 +31,10 @@ ul.chk>li{display:flex;gap:8px;padding:6px 0;border-top:1px dashed var(--line)}
 ol.steps{margin:4px 0 0 18px;padding:0;color:var(--mut);font-size:13px}
 .acts{display:flex;gap:4px;align-items:flex-start}
 .acts button,.acts select{padding:2px 6px;font-size:12px}
+.tick{width:34px;height:30px;font-size:16px;line-height:1;border-radius:8px;color:var(--mut)}
+.tick:hover{background:var(--ok);color:#0b0d10;border-color:var(--ok)}
+.tick.on{background:var(--ok);color:#0b0d10;border-color:var(--ok)}
+@media (max-width:620px){.tick{width:42px;height:38px;font-size:18px}}
 .empty{color:var(--mut);padding:20px;text-align:center}
 .nx li .where{color:var(--mut);font-size:12px}
 .tile{display:inline-flex;flex-direction:column;background:var(--card);border:1px solid var(--line);border-radius:9px;padding:6px 12px;min-width:92px}
@@ -115,6 +119,8 @@ function itemRow(a,i,idx){
     ${i.check?`<span class="p">Check: ${link(i.check)}</span>`:""}
     ${i.p?`<span class="p">${link(i.p)}</span>`:""}</div>
     <div class="acts">
+      ${(i.s==="done"||i.s==="said")?'<button class="tick on" data-untick title="Mark it not done again">✓</button>'
+        :'<button class="tick" data-tick title="Done — tick it off">✓</button>'}
       <select data-set>${STATES.map(s=>`<option${s===(i.s||"open")?" selected":""}>${s}</option>`).join("")}</select>
       <button data-edit>Edit</button><button data-del>✕</button>
     </div></li>`;
@@ -167,6 +173,8 @@ document.addEventListener("click",async e=>{
   if(v){view=v.dataset.v;document.querySelectorAll("[data-v]").forEach(b=>b.setAttribute("aria-pressed",String(b===v)));draw();return}
   const li=e.target.closest("li[data-id]"), id=li?.dataset.id, i=li?.dataset.i;
   const ask=D.find(a=>a.id===id), it=ask?.items[i];
+  if(e.target.closest("[data-tick]")){await api("item.patch",{id,i,s:"done"});return load()}
+  if(e.target.closest("[data-untick]")){await api("item.patch",{id,i,s:"waiting"});return load()}
   if(e.target.closest("[data-del]")&&confirm("Delete this step?")){await api("item.delete",{id,i});return load()}
   if(e.target.closest("[data-edit]"))
     return form("Edit step",[{label:"Step",name:"t",value:it.t},{label:"Status",name:"s",opts:STATES,value:it.s||"open"},

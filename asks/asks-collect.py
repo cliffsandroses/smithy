@@ -5,7 +5,7 @@ Runs on the laptop every 5 minutes (asks-collect.timer). Reads Claude Code's own
 (~/.claude/projects/*/*.jsonl: chats on this laptop, including the ones driven from the phone
 through Remote Control) and adds each new message to the ledger, ~/Projects/asks/ledger.json.
 Claude records each ask's items there: {"t": what, "s": done|said|open|waiting|blocked|chat,
-"p": the proof}. "said" = a chat reported it done and nobody checked. It then writes
+"p": the proof, "m": model, "e": effort}. m and e (e.g. "Opus 5.5", "high") are the model and effort Claude suggests for a to-do item. "said" = a chat reported it done and nobody checked. It then writes
 ~/Projects/asks/asks.json, which Syncthing carries to the homelab for Nucleus. Keys pasted into
 a message are hidden. Nothing leaves the laptop except through Syncthing.
 

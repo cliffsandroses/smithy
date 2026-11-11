@@ -123,9 +123,11 @@ def sample():
     except Exception as e: print("llmpick failed:", type(e).__name__, e, file=sys.stderr)
     try:   # PCAI recordings dropped in EC01/PCAI/inbox from the work PC (pcai-inbox runs on its own, it takes hours)
         import glob
-        if glob.glob(os.path.expanduser("~/EC01/PCAI/inbox/*.[tum][xrp][tl4]")) and subprocess.run(["pgrep", "-f", "pcai-inbox"], capture_output=True).returncode:
-            subprocess.Popen([os.path.join(HERE, "..", "teams-transcribe", "pcai-inbox")], start_new_session=True,
-                             stdout=open(os.path.expanduser("~/.local/share/netwatch/pcai-inbox.log"), "a"), stderr=subprocess.STDOUT)
+        # 2026-11-10: started as its own scope. As a plain child it died with this one-minute job (systemd clears the job's
+        # processes when it ends), so recordings sat in the inbox until their links expired.
+        if glob.glob(os.path.expanduser("~/EC01/PCAI/inbox/*.[tum][xrp][tl4]")) and subprocess.run(["systemctl", "--user", "-q", "is-active", "pcai-inbox-run"]).returncode:
+            subprocess.run(["systemd-run", "--user", "-q", "--collect", "--unit", "pcai-inbox-run", "-p", "StandardOutput=append:" + os.path.expanduser("~/.local/share/netwatch/pcai-inbox.log"),
+                            "-p", "StandardError=inherit", os.path.join(HERE, "..", "teams-transcribe", "pcai-inbox")], capture_output=True)
     except Exception as e: print("pcai-inbox failed:", type(e).__name__, e, file=sys.stderr)
 
 
