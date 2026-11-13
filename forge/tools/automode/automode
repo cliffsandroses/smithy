@@ -57,7 +57,7 @@ tight() { [ "$mem" -lt 2500 ] || [ "$temp" -ge 85 ]; }
 guard() { { [ "$ac" = 0 ] && [ "$bat" -lt 25 ]; } || [ "$temp" -ge 90 ] || [ "$mem" -lt 600 ]; }
 mode=idle; why="nothing busy"
 if [ "$mem" -lt 500 ] && ! inuse; then mode=lowmem; why="memory nearly gone (${mem} MB free): OpenClaw stopped to free ~600 MB"   # Moosa 2026-11-02: laptop lagging, RAM+swap full
-elif inuse; then mode=claw; why="OpenClaw in use or held"
+elif inuse; then mode=claw; why="$( [ "$CW" = hermes-gateway.service ] && echo Hermes || echo OpenClaw ) in use or held"
 elif chiaki_live; then if tight; then mode=stream; why="Remote Play streaming, ${mem} MB free, ${temp} °C: OpenClaw stopped"; else mode=stream-light; why="Remote Play streaming with room to spare (${mem} MB, ${temp} °C): OpenClaw kept at lowest priority"; fi
 elif playing; then if tight; then mode=stream; why="video playing, resources tight"; else mode=stream-light; why="video playing, resources fine"; fi
 elif mic; then mode=call; why="microphone in use"
