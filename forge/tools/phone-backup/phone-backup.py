@@ -11,6 +11,7 @@ Usage: phone-backup.py [--dry-run]   Output: ~/Backups/phone/<serial>/{apks,sett
 import json, os, subprocess, sys, time
 
 DEV = os.environ.get("PHONE_ADB", "192.168.10.16:5555")
+SERIAL = "RZCYA1H6KVJ"
 ROOT = os.path.expanduser("~/Backups/phone")
 DIRS = ["DCIM", "Pictures", "Documents", "Music", "Movies", "Download", "Android/media"]
 DRY = "--dry-run" in sys.argv
@@ -21,8 +22,19 @@ def adb(*a, t=600) -> str:
     return r.stdout.decode("utf-8", "replace")
 
 
-def main():
+def find_phone():
+    """The phone's IP changes (DHCP): find it by its adb mDNS name instead of a fixed address."""
+    global DEV
+    try:
+        out = subprocess.run(["adb", "mdns", "services"], capture_output=True, text=True, timeout=15).stdout
+        for line in out.splitlines():
+            if SERIAL in line and "_adb._tcp" in line: DEV = line.split()[-1]; break
+    except Exception: pass
     subprocess.run(["adb", "connect", DEV], capture_output=True, timeout=20)
+
+
+def main():
+    find_phone()
     serial = adb("shell", "getprop", "ro.serialno").strip()
     if not serial: print("phone not reachable over adb at", DEV); return 2
     base = f"{ROOT}/{serial}"; os.makedirs(f"{base}/apks", exist_ok=True); os.makedirs(f"{base}/settings", exist_ok=True)
