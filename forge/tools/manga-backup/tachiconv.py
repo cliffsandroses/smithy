@@ -115,11 +115,14 @@ def tachibk(path):
     mangas, cats, sources, other = {}, [], [], []
     for f, t, v, whole in fields(data):
         if f == 1:
-            sid = url = None
-            for ff, tt, vv, _ in fields(v):
+            sid = url = None; clean = b""
+            for ff, tt, vv, w in fields(v):
                 if ff == 1: sid = vv
                 elif ff == 2: url = vv.decode()
-            mangas[(sid, url)] = v
+                if ff == 16:   # chapter: Nekoyomi adds field 13, which Suwayomi's schema can't decode -> drop it
+                    w = f_bytes(16, b"".join(w2 for a, _, _, w2 in fields(vv) if a != 13))
+                clean += w
+            mangas[(sid, url)] = clean
         elif f == 2:
             name = order = None
             for ff, tt, vv, _ in fields(v):
