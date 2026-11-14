@@ -24,7 +24,7 @@ import gzip, hashlib, json, re, sys, urllib.request, zipfile
 SOURCES = {
     "IMHENTAI": ("IMHentai", "en", 1), "NOVELCROW": ("NovelCrow", "en", 1), "WEEBCENTRAL": ("Weeb Central", "en", 1),
     "DEMONICSCANS": ("Demonic Scans", "en", 1), "MANGAPARK": ("MangaPark", "en", 1), "MANGAJINX": ("MangaJinx", "en", 1),
-    "READCOMICSONLINE": ("ReadComicsOnline", "en", 1), "WEBTOONS_EN": ("Webtoons.com", "en", 1),
+    "READCOMICSONLINE": ("Read Comics Online", "en", 1), "WEBTOONS_EN": ("Webtoons.com", "en", 1),
     "LINEWEBTOONS_EN": ("Webtoons.com", "en", 1), "MANGADEX": ("MangaDex", "en", 1), "MANGACUTE": ("MangaCute", "en", 1),
     "MANGAFOREST": ("Manga Forest", "en", 1), "MANGATOWN": ("MangaTown", "en", 1), "MANGAKAKALOT": ("Mangakakalot", "en", 1),
     "COMICK_FUN": ("Comick", "en", 1), "MANGAXYZ": ("MangaXYZ", "en", 1), "HENTAIFOX": ("HentaiFox", "en", 1),
@@ -174,8 +174,46 @@ def main(argv):
     open(out, "wb").write(gzip.compress(body))
     print(f"wrote {out}: {kept} manga ({len(t_mangas)} from tachibk, {kept - len(t_mangas)} from Kotatsu), {len(cat_bytes)} categories, {len(seen)} sources")
     if unknown: print("guessed source names for:", ", ".join(sorted(unknown)), "(fix in SOURCES if Suwayomi says they're missing)")
-    if check: print(suwayomi_check(check, out))
+    if check: print(remap(out, check)); print(suwayomi_check(check, out))
     return 0
+
+
+def remap(path, base):
+    """Point every manga at the source Suwayomi actually has installed, matched by name (case/punctuation-blind),
+    preferring en, then all. Fixes ids that differ from the computed ones (versionId bumps, renamed sources)."""
+    def G(q):
+        r = urllib.request.Request(base.rstrip("/") + "/api/graphql", data=json.dumps({"query": q}).encode(), headers={"Content-Type": "application/json"})
+        return json.load(urllib.request.urlopen(r, timeout=120))
+    norm = lambda s: re.sub(r"[^a-z0-9]", "", (s or "").lower())
+    have = {}
+    for s in sorted(G("{ sources { nodes { id name lang } } }")["data"]["sources"]["nodes"], key=lambda s: {"en": 0, "all": 1}.get(s["lang"], 2), reverse=True):
+        have[norm(s["name"])] = int(s["id"])
+    ids = set(have.values())
+    data = gzip.decompress(open(path, "rb").read())
+    names = {}
+    for f, t, v, _ in fields(data):
+        if f == 101:
+            n = sid = None
+            for ff, tt, vv, _ in fields(v):
+                if ff == 1: n = vv.decode()
+                elif ff == 2: sid = vv
+            names[sid] = n
+    out = b""; moved = 0
+    for f, t, v, whole in fields(data):
+        if f == 1:
+            sid = next(vv for ff, _, vv, _ in fields(v) if ff == 1)
+            new = have.get(norm(names.get(sid, ""))) if sid not in ids else None
+            if new and new != sid:
+                v = f_int(1, new) + b"".join(w for ff, _, _, w in fields(v) if ff != 1); moved += 1
+            out += f_bytes(1, v)
+        elif f == 101:
+            n = names.get(next((vv for ff, _, vv, _ in fields(v) if ff == 2), None))
+            new = have.get(norm(n))
+            out += f_bytes(101, f_str(1, n) + f_int(2, new)) if new else whole
+        else:
+            out += whole
+    open(path, "wb").write(gzip.compress(out))
+    return f"remapped {moved} manga to installed source ids"
 
 
 def suwayomi_check(base, path):
