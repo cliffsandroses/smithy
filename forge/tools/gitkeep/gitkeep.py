@@ -109,8 +109,12 @@ def main():
         import urllib.request
         body = "; ".join(f"{k}: {v}" for k, v in needs.items())[:300]
         try:
-            urllib.request.urlopen(urllib.request.Request(
-                NTFY, data=body.encode(), headers={"Title": "GitHub: a repo needs you"}), timeout=20)
+            if NTFY == "gate":   # Keystone app via Gate (was ntfy until 2026-11-23)
+                import subprocess
+                subprocess.run([os.path.expanduser("~/.local/bin/notify"), "GitHub: a repo needs you", body], timeout=30)
+            else:
+                urllib.request.urlopen(urllib.request.Request(
+                    NTFY, data=body.encode(), headers={"Title": "GitHub: a repo needs you"}), timeout=20)
         except Exception:
             pass
     return 1 if needs else 0

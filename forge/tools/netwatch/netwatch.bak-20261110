@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+"""netwatch: the home internet, watched (2026-10-27: CableLite's 3,300 GB month ran out and everything crawled).
+
+  netwatch sample    every minute (timer): the router's own internet counters (UPnP, no password) → this month's usage
+  netwatch quality   every 5 minutes (timer): loss and latency to the router and the internet
+  netwatch           this month's usage, and how the line is doing
+  netwatch report    the last 24 hours of line quality, for the ISP
+  netwatch install   start the two timers (once)
+  netwatch guard     apply the data guard now (Soma's Internet switches)
+
+Settings: ~/.config/netwatch/conf (CAP_GB, CYCLE_DAY, START_USED_GB). The data guard (guard.py) runs with every sample. Phone alerts go to the homelab's ntfy topic (the
+one Watchtower uses) at 80/90/95/100 % of the cap and when the line is bad 3 checks running.
+"""
+import datetime as dt, json, os, re, subprocess, sys, time, urllib.request
+
+HERE = os.path.dirname(os.path.realpath(__file__)); sys.path.insert(0, HERE)
+D = os.path.expanduser("~/.local/share/netwatch"); os.makedirs(D, exist_ok=True)
+STATE, QLOG = f"{D}/usage.json", f"{D}/log.jsonl"
+CONF = {"CAP_GB": "3500", "CYCLE_DAY": "1", "START_USED_GB": "0"}
+try: CONF.update(dict(l.strip().split("=", 1) for l in open(os.path.expanduser("~/.config/netwatch/conf")) if "=" in l and not l.startswith("#")))
+except OSError: pass
+CAP, DAY = float(CONF["CAP_GB"]) * 1e9, int(CONF["CYCLE_DAY"])
+
+
+def topic():
+    """The homelab's ntfy topic, read from Watchtower's compose file (never printed)."""
+    return re.search(r"ntfy://([^/\s]+)/([\w-]+)", open(os.path.expanduser("~/homelab/watchtower/docker-compose.yml")).read())
+
+
+def ntfy(title, body, prio="high"):
+    try:
+        m = topic()
+        urllib.request.urlopen(urllib.request.Request(f"https://{m.group(1)}/{m.group(2)}", body.encode(),
+                               {"Title": title, "Priority": prio, "Tags": "satellite"}), timeout=15)
+    except Exception as e: print("ntfy failed:", type(e).__name__, file=sys.stderr)
+
+
+def cycle_start(now):
+    d = now.replace(day=min(DAY, 28), hour=0, minute=0, second=0, microsecond=0)
+    if now < d: d = (d - dt.timedelta(days=28)).replace(day=min(DAY, 28))
+    return d.strftime("%Y-%m-%d")
+
+
+def counters():
+    import wan
+    return wan.totals()
+
+
+def qb_bytes():
+    """qBittorrent container's received/sent bytes (its own network namespace, so all of it is internet)."""
+    try:
+        pid = subprocess.run(["docker", "inspect", "-f", "{{.State.Pid}}", "qbittorrent"], capture_output=True, text=True).stdout.strip()
+        f = next(l.split() for l in open(f"/proc/{pid}/net/dev") if l.strip().startswith("eth0:"))
+        return int(f[1]), int(f[9])
+    except (OSError, StopIteration, ValueError): return None
+
+
+def load():
+    try: return json.load(open(STATE))
+    except (OSError, ValueError): return {}
+
+
+def sample():
+    rx, tx = counters(); s = load(); now = dt.datetime.now(); cyc = cycle_start(now)
+    if s.get("cycle") != cyc:   # a new month: start again (the first month starts from what the ISP app said)
+        s = {"cycle": cyc, "used": float(CONF["START_USED_GB"]) * 1e9 if not s else 0.0, "down": 0.0, "up": 0.0, "alerted": [], "days": {}}
+    def delta(new, old):
+        if old is None: return 0
+        if new >= old: return new - old
+        return new + (2**32 - old) if old > 2**31 else new          # 32-bit counter wrapped, or the router restarted
+    d_rx, d_tx = delta(rx, s.get("rx")), delta(tx, s.get("tx"))
+    # The Cudy's download counter stops at 2^32-1 (miniupnpd clamps it) until the router restarts; then downloads are
+    # counted from qBittorrent's own traffic, nearly all the house's internet use (2026-10-27)
+    q = qb_bytes(); s["rx_stuck"] = rx == 2**32 - 1
+    if q:
+        q_rx = delta(q[0], s.get("qrx")) if s.get("qrx") is not None and q[0] >= s.get("qrx", 0) else 0; s["qrx"] = q[0]
+        if s["rx_stuck"]: d_rx = q_rx
+    s.update(rx=rx, tx=tx, at=time.time()); s["used"] += d_rx + d_tx; s["down"] += d_rx; s["up"] += d_tx
+    k = now.strftime("%m-%d"); s["days"][k] = s["days"].get(k, 0) + d_rx + d_tx
+    for pct in (80, 90, 95, 100):
+        if s["used"] >= CAP * pct / 100 and pct not in s["alerted"]:
+            s["alerted"].append(pct)
+            ntfy(f"Internet: {pct}% of this month used", f"{s['used']/1e9:.0f} of {CAP/1e9:.0f} GB used since {cyc}. "
+                 f"Today so far: {s['days'][k]/1e9:.1f} GB.", "urgent" if pct >= 95 else "high")
+    # the day's budget: what's left this cycle shared over the days left; one alert a day when today runs past it
+    nxt = (dt.datetime.strptime(cyc, "%Y-%m-%d") + dt.timedelta(days=32)).replace(day=min(DAY, 28))
+    days_left = max(1, (nxt - now).days + 1)
+    if s.get("share_day") != k:   # today's share is fixed at the day's first sample: what was left, over the days left
+        s["share_day"], s["share"] = k, max(0.0, CAP - (s["used"] - s["days"][k])) / days_left
+    budget = s["share"]
+    if s["days"][k] > budget and s.get("budget_alert") != k:
+        s["budget_alert"] = k
+        ntfy("Internet: over today's share", f"{s['days'][k]/1e9:.1f} GB used today; the {max(0, CAP - s['used'])/1e9:.0f} GB left "
+             f"over {days_left} days is {budget/1e9:.1f} GB a day.")
+    dtm = max(1.0, time.time() - s.get("prev_at", time.time() - 60)); s["prev_at"] = time.time()
+    print(f"+{d_rx/1e6:.1f} MB down, +{d_tx/1e6:.1f} MB up in {dtm:.0f} s ({(d_rx + d_tx) * 8 / dtm / 1e6:.2f} Mbit/s)"
+          f"{' [down from qBittorrent: router counter full]' if s.get('rx_stuck') else ''} | today {s['days'][k]/1e9:.2f} GB"
+          f" of {budget/1e9:.1f} GB/day | month {s['used']/1e9:.1f}/{CAP/1e9:.0f} GB, {days_left} days left")
+    json.dump(s, open(STATE + ".tmp", "w")); os.replace(STATE + ".tmp", STATE)
+    try:
+        import guard; print(guard.run(s, k, budget, topic().group(2), ntfy))
+    except Exception as e: print("guard failed:", type(e).__name__, e, file=sys.stderr)
+    try:
+        import routerwatch; r = routerwatch.run(ntfy); r and print(r)
+    except Exception as e: print("routerwatch failed:", type(e).__name__, e, file=sys.stderr)
+    try:
+        import ps5watch; r = ps5watch.run(ntfy); r and print(r)
+    except Exception as e: print("ps5watch failed:", type(e).__name__, e, file=sys.stderr)
+    try:
+        import backupmap; r = backupmap.run(); r and print(r)
+    except Exception as e: print("backupmap failed:", type(e).__name__, e, file=sys.stderr)
+    try:
+        import atlas; r = atlas.run(); r and print(r)
+    except Exception as e: print("atlas failed:", type(e).__name__, e, file=sys.stderr)
+    try:
+        import toolsmd; r = toolsmd.run(); r and print(r)
+    except Exception as e: print("toolsmd failed:", type(e).__name__, e, file=sys.stderr)
+    try:
+        import oraclegrab; r = oraclegrab.run(notify=ntfy); r and print(r)
+    except Exception as e: print("oraclegrab failed:", type(e).__name__, e, file=sys.stderr)
+    try:
+        import llmpick; r = llmpick.run(); r and print(r)
+    except Exception as e: print("llmpick failed:", type(e).__name__, e, file=sys.stderr)
+    try:   # PCAI recordings dropped in EC01/PCAI/inbox from the work PC (pcai-inbox runs on its own, it takes hours)
+        import glob
+        if glob.glob(os.path.expanduser("~/EC01/PCAI/inbox/*.[tum][xrp][tl4]")) and subprocess.run(["pgrep", "-f", "pcai-inbox"], capture_output=True).returncode:
+            subprocess.Popen([os.path.join(HERE, "..", "teams-transcribe", "pcai-inbox")], start_new_session=True,
+                             stdout=open(os.path.expanduser("~/.local/share/netwatch/pcai-inbox.log"), "a"), stderr=subprocess.STDOUT)
+    except Exception as e: print("pcai-inbox failed:", type(e).__name__, e, file=sys.stderr)
+
+
+def ping(h):
+    o = subprocess.run(["ping", "-c", "20", "-i", "0.2", "-W", "2", "-q", h], capture_output=True, text=True).stdout
+    loss = float((re.search(r"([\d.]+)% packet loss", o) or [0, 100])[1]); avg = float((re.search(r"= [\d.]+/([\d.]+)/", o) or [0, 0])[1])
+    return loss, avg
+
+
+def quality():
+    rl, ra = ping("192.168.10.1"); l1, a1 = ping("1.1.1.1"); l8, a8 = ping("8.8.8.8")
+    row = {"t": int(time.time()), "router_ms": ra, "loss": max(l1, l8), "ms": round((a1 + a8) / 2, 1)}
+    open(QLOG, "a").write(json.dumps(row) + "\n")
+    print(f"router {ra:.1f} ms | 1.1.1.1 {l1:.0f}% loss {a1:.0f} ms | 8.8.8.8 {l8:.0f}% loss {a8:.0f} ms")
+    rows = [json.loads(l) for l in open(QLOG).readlines()[-3:]]
+    bad = lambda r: r["loss"] >= 10 or r["ms"] > 120
+    if len(rows) == 3 and all(bad(r) for r in rows) and not os.path.exists(f"{D}/bad"):
+        open(f"{D}/bad", "w").close(); ntfy("Internet is bad", f"{row['loss']:.0f}% loss, {row['ms']:.0f} ms for 15 minutes; the house network itself is fine ({ra:.1f} ms to the router).")
+    elif not bad(row) and os.path.exists(f"{D}/bad"):
+        os.remove(f"{D}/bad"); ntfy("Internet is back to normal", f"{row['loss']:.0f}% loss, {row['ms']:.0f} ms.", "default")
+    print(json.dumps(row))
+
+
+def status():
+    s = load()
+    if s:
+        days = max(1, (dt.datetime.now() - dt.datetime.strptime(s["cycle"], "%Y-%m-%d")).days + 1)
+        print(f"This month (since {s['cycle']}): {s['used']/1e9:.1f} of {CAP/1e9:.0f} GB used ({s['used']/CAP*100:.0f}%), "
+              f"{(CAP-s['used'])/1e9:.0f} GB left. Measured: ↓{s['down']/1e9:.1f} ↑{s['up']/1e9:.1f} GB."
+              + (" (Downloads estimated from qBittorrent: the router's download counter is full until it restarts.)" if s.get("rx_stuck") else ""))
+        for k in sorted(s["days"])[-7:]: print(f"  {k}: {s['days'][k]/1e9:.1f} GB")
+    try:   # the Kaggle GPU jobs' own traffic (kaggle-run logs it), this cycle
+        t0 = dt.datetime.strptime(load().get("cycle", "2000-01-01"), "%Y-%m-%d").timestamp(); up = down = 0
+        for l in open(os.path.expanduser("~/Projects/clipper/kaggle/traffic.log")):
+            ts, way, _, n = (l.split() + ["0"])[:4]
+            if float(ts) >= t0: up, down = up + (int(n) if way == "up" else 0), down + (int(n) if way == "down" else 0)
+        print(f"Kaggle GPU this month: ↑{up/1e9:.1f} GB uploaded, ↓{down/1e9:.1f} GB downloaded")
+    except (OSError, ValueError): pass
+    try: print("Line:", open(QLOG).readlines()[-1].strip())
+    except (OSError, IndexError): pass
+
+
+def report():
+    rows = [json.loads(l) for l in open(QLOG) if l.strip()]; rows = [r for r in rows if r["t"] > time.time() - 86400]
+    bad = [r for r in rows if r["loss"] >= 5 or r["ms"] > 80]
+    print(f"{len(rows)} checks in 24 h, {len(bad)} bad (loss ≥5% or >80 ms). Worst:")
+    for r in sorted(rows, key=lambda r: -r["loss"])[:8]:
+        print(time.strftime("%d %b %H:%M", time.localtime(r["t"])), f"loss {r['loss']}%  {r['ms']} ms  (router {r['router_ms']} ms)")
+
+
+def guard_now():
+    """Apply the guard now (Soma's switches call this), with this minute's numbers."""
+    import guard; s = load(); k = dt.datetime.now().strftime("%m-%d")
+    print(guard.run(s, k, s.get("share", float("inf")) if s.get("share_day") == k else float("inf"), topic().group(2), ntfy))
+
+
+def install():
+    """Run sample every minute and quality every 5 minutes (systemd user timers)."""
+    u = os.path.expanduser("~/.config/systemd/user"); os.makedirs(u, exist_ok=True)
+    for n, every in (("sample", "1min"), ("quality", "5min")):
+        open(f"{u}/netwatch-{n}.service", "w").write(f"[Unit]\nDescription=netwatch {n}\n[Service]\nType=oneshot\nExecStart={os.path.realpath(__file__)} {n}\n")
+        open(f"{u}/netwatch-{n}.timer", "w").write(f"[Unit]\nDescription=netwatch {n} every {every}\n[Timer]\nOnBootSec=1min\nOnUnitActiveSec={every}\n"
+                                                   "AccuracySec=10s\n[Install]\nWantedBy=timers.target\n")
+    subprocess.run(["systemctl", "--user", "daemon-reload"]); subprocess.run(["systemctl", "--user", "enable", "--now", "netwatch-sample.timer", "netwatch-quality.timer"])
+    print(subprocess.run(["systemctl", "--user", "list-timers", "--no-pager"], capture_output=True, text=True).stdout)
+
+
+cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+{"sample": sample, "quality": quality, "report": report, "install": install, "guard": guard_now}.get(cmd, status)()

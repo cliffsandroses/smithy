@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# jellyfin-posters: bring back the missing posters (2026-10-27: 52 of 87 titles had none, blank in Soma and Jellyfin).
+# Cause: the Movies (and Collections) library was set to save posters and .nfo files beside the media, but Jellyfin's
+# LXC 200 mounts the media share read-only, so every save failed ("Read-only file system" in its log).
+#   1. sets every library to keep posters in Jellyfin's own data folder, and restarts Jellyfin (via the laptop → Proxmox)
+#   2. asks Jellyfin, through Soma's own connection, to refresh every title that has no poster
+#   3. waits, then counts again and says how many still have none
+# Run on the homelab: jellyfin-posters
+set -euo pipefail
+LAPTOP=moosa@192.168.10.30; PVE=root@192.168.10.13
+SOMA_PID=$(pgrep -f "soma/test/next/serve.py" | head -1)
+[ -n "$SOMA_PID" ] || { echo "Soma isn't running here."; exit 1; }
+
+echo "1/3 Library settings in Jellyfin (LXC 200)"
+fix=$(mktemp); cat > "$fix" <<'E'
+cd /config/data/root/default
+for f in */options.xml; do
+  cp -n "$f" "$f.bak-20261027"
+  sed -i 's#<SaveLocalMetadata>true</SaveLocalMetadata>#<SaveLocalMetadata>false</SaveLocalMetadata>#' "$f"
+  echo "    $f: $(grep -oE '<SaveLocalMetadata>[^<]*' "$f" | cut -d'>' -f2)"
+done
+systemctl restart jellyfin; sleep 10; echo "    Jellyfin $(systemctl is-active jellyfin)"
+E
+scp -q "$fix" $LAPTOP:/tmp/jp.sh && ssh $LAPTOP "scp -q /tmp/jp.sh $PVE:/tmp/jp.sh && ssh $PVE 'pct push 200 /tmp/jp.sh /tmp/jp.sh && pct exec 200 -- sh /tmp/jp.sh'"
+rm -f "$fix"; sleep 20
+
+count() { python3 - "$SOMA_PID" "$@" <<'E'
+import os,sys
+for kv in open(f"/proc/{sys.argv[1]}/environ","rb").read().split(b"\0"):
+    k,_,v=kv.decode(errors="replace").partition("=")
+    if k.startswith("SOMA_"): os.environ[k]=v
+sys.path.insert(0,"/home/moosa/soma/test/next")
+from jf import jf,UID
+items=jf(f"/Items?userId={UID}&Recursive=true&IncludeItemTypes=Series,Movie&EnableImageTypes=Primary&Limit=2000")["Items"]
+miss=[i for i in items if "Primary" not in (i.get("ImageTags") or {})]
+print(f"    {len(items)} titles, {len(miss)} without a poster")
+if "--refresh" in sys.argv:
+    for i in miss:
+        jf(f"/Items/{i['Id']}/Refresh?metadataRefreshMode=FullRefresh&imageRefreshMode=FullRefresh&replaceAllMetadata=false&replaceAllImages=false",method="POST")
+    print(f"    asked Jellyfin to refresh {len(miss)}")
+elif miss: print("    still none: " + ", ".join(i["Name"] for i in miss[:20]))
+E
+}
+echo "2/3 Refreshing every title without a poster"; count --refresh
+echo "3/3 Waiting 3 minutes for Jellyfin to fetch them, then checking"; sleep 180; count

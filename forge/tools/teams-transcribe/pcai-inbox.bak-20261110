@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""pcai-inbox: Teams/SharePoint recordings → transcript and screenshots, with nothing to do but
+paste the link on the work PC (Moosa, 2026-11-02: "Teams transcribe should work automatically. I should just be able to
+give the url on my work pc. And I need screenshots too at necessary times of the video. I want to use this to update
+pcai tool"; PCAI Tool removed 2026-11-03 — study pages live in EC01/PCAI/PCAI-Study).
+
+Easiest on the work PC (signed in): open the recording and click the "Grab recording" bookmark (grab-recording.js). It
+saves <name>.vtt (Teams' transcript, with speakers) and <name>.txt (a fresh video link) straight into EC01\\PCAI\\inbox.
+A Teams transcript is used as is (no Whisper); the video is still downloaded for the screenshots.
+Or by hand: put the recording's videomanifest URL (F12 → Network → filter "videomanifest" → play 2 s → Copy URL) in a
+text file in EC01\\PCAI\\inbox, e.g. "Day 5 networking.txt". EC01 sends it to the homelab; netwatch runs this every minute:
+  1. ffmpeg downloads the recording (the URL carries its own short-lived token) → EC01/PCAI/recordings/<name>.mp4
+  2. screenshots where the screen changes (a new slide, a new window; at most 1 per 20 s, 80 in all), each named by its
+     time → EC01/PCAI/screens/<name>/
+  3. a transcript on the homelab (faster-whisper, 20-minute pieces) → EC01/PCAI/transcripts/<name>.txt
+  File names start with what the recording is for: [pnip] (PNIP material), [study] (PCAI study), [me] (Moosa's own notes and
+  questions), [meeting] (team meeting: summary and actions). Claude reads that tag when Moosa asks about the recording.
+  Study pages are not made here: Moosa writes them with Claude, when and how he says (2026-11-02).
+The inbox file is renamed .done (or .failed with the reason inside). Videos already downloaded (.mp4 in the inbox) work too.
+  pcai-inbox            process the inbox once
+"""
+import base64, glob, html, json, os, re, subprocess, sys, time
+
+EC = os.path.expanduser("~/PCAI-work"); INBOX = os.path.expanduser("~/EC01/PCAI/inbox")   # outputs outside EC01: the work PC (send only) wiped them there on 2026-11-02
+WHISPER = os.path.expanduser("~/.local/share/pcai-whisper")
+LAPTOP = "moosa@192.168.10.30"
+
+
+def sh(cmd, **k): return subprocess.run(cmd, capture_output=True, text=True, **k)
+
+
+def slug(s): return re.sub(r"[^A-Za-z0-9]+", "-", s).strip("-")[:60] or time.strftime("rec-%Y%m%d-%H%M")
+
+
+def download(src, name):
+    out = f"{EC}/recordings/{name}.mp4"; os.makedirs(os.path.dirname(out), exist_ok=True)
+    if os.path.exists(out): return out
+    if os.path.isfile(src): os.rename(src, out); return out
+    url = re.sub(r"&?(altManifestMetadata|enableCdn)=[^&]*", "", src)       # the plain manifest gives the full-length stream
+    r = sh(["ffmpeg", "-v", "error", "-y", "-i", url, "-c", "copy", out + ".part.mp4"], timeout=4 * 3600)
+    if r.returncode: raise RuntimeError("download failed (the link may have expired; copy a fresh one): " + r.stderr[-300:])
+    os.rename(out + ".part.mp4", out); return out
+
+
+def screens(video, name):
+    d = f"{EC}/screens/{name}"; os.makedirs(d, exist_ok=True)
+    if glob.glob(f"{d}/*.jpg"): return sorted(glob.glob(f"{d}/*.jpg"))
+    # frames where the picture changes a lot (slides, windows), with their times
+    r = sh(["ffmpeg", "-v", "info", "-i", video, "-vf", "select='gt(scene,0.28)',showinfo,scale=1280:-2", "-vsync", "vfr",
+            "-q:v", "4", f"{d}/f%04d.jpg"], timeout=3 * 3600)
+    times = [float(t) for t in re.findall(r"pts_time:([\d.]+)", r.stderr)]
+    files = sorted(glob.glob(f"{d}/f*.jpg")); keep, last = [], -99
+    for f, t in zip(files, times):
+        if t - last >= 20 and len(keep) < 80: keep.append((f, t)); last = t
+        else: os.remove(f)
+    if not keep:   # a talk with no slides: one picture every 5 minutes
+        dur = float(sh(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", video]).stdout or 0)
+        for t in range(60, int(dur), 300):
+            f = f"{d}/f{t:05d}.jpg"; sh(["ffmpeg", "-v", "error", "-y", "-ss", str(t), "-i", video, "-frames:v", "1", "-vf", "scale=1280:-2", "-q:v", "4", f])
+            keep.append((f, t))
+    out = []
+    for f, t in keep:
+        n = f"{d}/{int(t)//3600}-{int(t)%3600//60:02d}-{int(t)%60:02d}.jpg"; os.rename(f, n); out.append(n)
+    return sorted(out)
+
+
+def on_laptop(video, dst):
+    """Moosa 2026-11-03: CPU-heavy, low-RAM jobs go to the laptop (stronger CPU). Capped at 2 GB and 6 of 12 threads so it
+    stays usable and cool; any failure (laptop asleep, off the LAN) falls back to the homelab run below."""
+    if sh(["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", LAPTOP, "true"]).returncode: return False
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        if sh(["ffmpeg", "-loglevel", "error", "-i", video, "-vn", "-ac", "1", "-ar", "16000", "-f", "segment",
+               "-segment_time", "1200", f"{tmp}/p%03d.wav"]).returncode: return False
+        ps = sorted(os.listdir(tmp)); rd = f".cache/pcai-tx-{os.getpid()}"
+        if sh(["ssh", LAPTOP, f"mkdir -p {rd}"]).returncode or sh(["scp", "-q", *[f"{tmp}/{p}" for p in ps], f"{LAPTOP}:{rd}/"]).returncode: return False
+        args = " ".join(f"{k*1200} {rd}/{p}" for k, p in enumerate(ps))
+        r = sh(["ssh", LAPTOP, f"systemd-run --user --scope -q -p MemoryMax=2G -p CPUQuota=600% nice -n 10 "
+                f"~/.local/share/whisper-venv/bin/python ~/.local/share/whisper-venv/laptop-whisper.py {args}; rm -rf {rd}"], timeout=6 * 3600)
+    if r.returncode or not r.stdout.strip(): return False
+    open(dst, "w").write(r.stdout); return True
+
+
+def transcribe(video, name):
+    dst = f"{EC}/transcripts/{name}.txt"
+    if not os.path.exists(dst) and on_laptop(video, dst): print("transcribed on the laptop:", name)
+    if not os.path.exists(dst):
+        r = sh(["systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G", "nice", "-n", "15",
+                f"{WHISPER}/bin/python", f"{WHISPER}/transcribe.py", video], timeout=6 * 3600)
+        made = f"{EC}/transcripts/{os.path.splitext(os.path.basename(video))[0]}.txt"
+        if r.returncode or not os.path.exists(made): raise RuntimeError("transcription failed: " + r.stderr[-300:])
+        if made != dst: os.rename(made, dst)
+    return open(dst).read()
+
+
+def vtt(path, name):
+    """Teams .vtt → the transcript format used everywhere here: [h:mm:ss] Speaker: text"""
+    out, t, who = [], None, ""
+    for l in open(path, encoding="utf-8-sig", errors="ignore").read().splitlines():
+        m = re.match(r"(\d+):(\d+):(\d+)[.,]\d+\s+-->", l)
+        if m: t = f"{int(m[1])}:{m[2]}:{m[3]}"; continue
+        if t and l.strip() and not l.startswith(("WEBVTT", "NOTE")) and not re.fullmatch(r"[0-9a-f-]+(/\d+-\d+)?", l.strip()):
+            v = re.match(r"<v ([^>]+)>(.*?)(</v>)?$", l.strip()); who, txt = (v[1], v[2]) if v else (who, re.sub(r"<[^>]+>", "", l))
+            out.append(f"[{t}] {who + ': ' if who else ''}{txt.strip()}"); t = None
+    dst = f"{EC}/transcripts/{name}.txt"; os.makedirs(os.path.dirname(dst), exist_ok=True)
+    open(dst, "w").write("\n".join(out) + "\n"); return dst
+
+
+def one(item):
+    name = os.path.splitext(os.path.basename(item))[0]
+    teams = f"{INBOX}/{name}.vtt"
+    if os.path.exists(teams):                                          # Teams' own transcript: no Whisper needed
+        vtt(teams, name); os.rename(teams, teams + ".done")
+    if item.endswith(".vtt"): return f"{name}: Teams transcript ready"
+    src = item if item.endswith(".mp4") else open(item).read().strip().split()[0]
+    video = download(src, name); shots = screens(video, name); transcribe(video, name)
+    # no study page here: Moosa writes those with Claude, when and how he says (2026-11-02)
+    return f"{name}: recording, {len(shots)} screenshots and a transcript ready"
+
+
+def run():
+    os.makedirs(INBOX, exist_ok=True); done = []
+    vtts = [v for v in glob.glob(f"{INBOX}/*.vtt") if not any(os.path.exists(v[:-4] + e) for e in (".txt", ".url", ".mp4"))]   # transcript only
+    for item in sorted(glob.glob(f"{INBOX}/*.txt") + glob.glob(f"{INBOX}/*.url") + glob.glob(f"{INBOX}/*.mp4") + vtts):
+        if time.time() - os.path.getmtime(item) < 30: continue        # still syncing
+        lock = item + ".working"
+        if os.path.exists(lock): continue
+        open(lock, "w").close()
+        try:
+            msg = one(item); os.rename(item, item + ".done"); done.append(msg)
+        except Exception as ex:
+            open(item + ".failed", "w").write(str(ex)); os.rename(item, item + ".failed.src"); done.append(f"{item}: {ex}")
+        finally:
+            os.path.exists(lock) and os.remove(lock)
+    return done
+
+
+if __name__ == "__main__":
+    for m in run(): print(m)

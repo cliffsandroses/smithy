@@ -1,0 +1,31 @@
+#!/bin/bash
+# f11-backup: temporary full backup of the OPPO F11 (CPH1969) before any rooting (2026-11-23, Moosa: "Back up the whole
+# f11 temporarily and ask me what to do later"). Streams straight to the homelab (/mnt/nvme, 186 GB free) - nothing is
+# stored on the laptop. Without root, app-private data (/data/data) can't be read; everything else is here:
+#   sdcard.tar        all shared storage (photos, WhatsApp media + backups, downloads, documents)  ~46 GB
+#   apks/<pkg>/*.apk  every installed user app (base + splits) and apps.txt with versions
+#   contacts.txt, calllog.txt, sms.txt  (as far as Android lets adb read them)
+#   check.txt         file counts phone vs archive
+set -u -o pipefail
+S=Y96T8SLNJJCEDAFY; A="adb -s $S"; D=/mnt/nvme/Downloads/F11-backup-temp; H=192.168.10.20
+ssh $H "mkdir -p $D/apks"
+echo "[1/4] shared storage -> $D/sdcard.tar  $(date +%T)"
+$A exec-out "tar -cf - -C /sdcard . 2>/dev/null" | ssh $H "cat > $D/sdcard.tar"
+echo "[2/4] apps  $(date +%T)"
+$A shell "pm list packages -3 --show-versioncode" | tr -d '\r' | sed 's/^package://' > /tmp/f11-apps.txt
+scp -q /tmp/f11-apps.txt $H:$D/apps.txt
+while read -r line; do
+  p=${line%% *}
+  for apk in $($A shell pm path "$p" | tr -d '\r' | sed 's/^package://'); do
+    $A exec-out cat "$apk" | ssh $H "mkdir -p $D/apks/$p && cat > $D/apks/$p/$(basename "$apk")"
+  done
+done < /tmp/f11-apps.txt
+echo "[3/4] contacts, calls, sms  $(date +%T)"
+$A shell content query --uri content://com.android.contacts/data --projection display_name:data1:mimetype 2>&1 | ssh $H "cat > $D/contacts.txt"
+$A shell content query --uri content://call_log/calls --projection number:date:duration:type 2>&1 | ssh $H "cat > $D/calllog.txt"
+$A shell content query --uri content://sms --projection address:date:body:type 2>&1 | ssh $H "cat > $D/sms.txt"
+echo "[4/4] check  $(date +%T)"
+PHONE=$($A shell "find /sdcard/ -type f 2>/dev/null | wc -l" | tr -d '\r')
+ssh $H "cd $D && echo phone_files=$PHONE > check.txt && echo tar_files=\$(tar -tf sdcard.tar 2>/dev/null | grep -vc '/\$') >> check.txt && echo apk_dirs=\$(ls apks | wc -l) >> check.txt && echo apps_listed=\$(wc -l < apps.txt) >> check.txt && du -sh $D >> check.txt && wc -l contacts.txt calllog.txt sms.txt >> check.txt && cat check.txt"
+rm -f /tmp/f11-apps.txt
+echo "done $(date +%T)"
