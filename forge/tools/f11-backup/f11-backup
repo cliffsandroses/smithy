@@ -14,12 +14,13 @@ $A exec-out "tar -cf - -C /sdcard . 2>/dev/null" | ssh $H "cat > $D/sdcard.tar"
 echo "[2/4] apps  $(date +%T)"
 $A shell "pm list packages -3 --show-versioncode" | tr -d '\r' | sed 's/^package://' > /tmp/f11-apps.txt
 scp -q /tmp/f11-apps.txt $H:$D/apps.txt
-while read -r line; do
+while read -r line <&3; do
   p=${line%% *}
-  for apk in $($A shell pm path "$p" | tr -d '\r' | sed 's/^package://'); do
+  # </dev/null on every adb call: adb shell otherwise eats the loop's stdin and only the first app was saved (2026-11-23)
+  for apk in $($A shell pm path "$p" </dev/null | tr -d '\r' | sed 's/^package://'); do
     $A exec-out cat "$apk" | ssh $H "mkdir -p $D/apks/$p && cat > $D/apks/$p/$(basename "$apk")"
   done
-done < /tmp/f11-apps.txt
+done 3< /tmp/f11-apps.txt
 echo "[3/4] contacts, calls, sms  $(date +%T)"
 $A shell content query --uri content://com.android.contacts/data --projection display_name:data1:mimetype 2>&1 | ssh $H "cat > $D/contacts.txt"
 $A shell content query --uri content://call_log/calls --projection number:date:duration:type 2>&1 | ssh $H "cat > $D/calllog.txt"
