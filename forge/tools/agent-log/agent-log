@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""agent-log: every agent's day in one vault note, and a morning brief on the phone.
+(2026-11-23, from the video Moosa sent: "Hermes Obsidian is WILD" https://youtu.be/ZXjw8vNCWAU - one shared vault, a
+nightly note per agent with what it worked on / learned / decided / left in progress, any agent reads it next morning.)
+
+  agent-log night [YYYY-MM-DD]   write ~/Axon/agents/log/<date>.md from the day's real traces:
+                                  Docket items touched (who did them), git commits in ~/Axon and ~/Projects/*,
+                                  Hermes session titles, skills the agents patched. FreeLLMAPI (free) turns them
+                                  into the four parts per agent; without it the raw list is written.
+  agent-log brief                 08:00: five bullets (done / stuck / top 3 today) from the last note -> Keystone
+  agent-log health                Sundays: any missing night in the last 7 days -> Keystone alert
+Agents read the last 3 notes before starting work (AGENTS.md, start of every session).
+"""
+import datetime as dt, glob, json, os, sqlite3, subprocess, sys
+H = os.path.expanduser("~"); LOG = f"{H}/Axon/agents/log"; os.makedirs(LOG, exist_ok=True)
+NOTIFY = f"{H}/.local/bin/notify"
+
+
+def sh(cmd, inp=None, t=200):
+    try: return subprocess.run(cmd, input=inp, capture_output=True, text=True, timeout=t).stdout.strip()
+    except Exception: return ""
+
+
+def traces(day):
+    a, b = dt.datetime.fromisoformat(day), dt.datetime.fromisoformat(day) + dt.timedelta(days=1)
+    out = {"docket": [], "commits": [], "hermes": [], "skills": []}
+    try:
+        L = json.load(open(f"{H}/Projects/asks/ledger.json"))["asks"]
+        for k, v in L.items():
+            if not str(v.get("at", "")).startswith(day): continue
+            for i in v.get("items", []):
+                out["docket"].append(f'[{i.get("by", "?")}] {i.get("s")}: {i.get("t")} | {str(i.get("p", ""))[:160]}')
+    except Exception as e: out["docket"].append(f"(Docket unreadable: {e})")
+    for repo in [f"{H}/Axon"] + sorted(glob.glob(f"{H}/Projects/*/")):
+        if not os.path.isdir(os.path.join(repo, ".git")): continue
+        log = sh(["git", "-C", repo, "log", f"--since={a:%Y-%m-%d} 00:00", f"--until={b:%Y-%m-%d} 00:00", "--pretty=%s", "-n", "15"])
+        msgs = [m for m in log.splitlines() if m and not m.startswith("notes: ") and "autopush" not in m]
+        if msgs: out["commits"].append(f"{os.path.basename(repo.rstrip('/'))}: " + " · ".join(msgs[:8]))
+    try:
+        c = sqlite3.connect(f"file:{H}/.hermes/state.db?mode=ro", uri=True)
+        for title, n, cost in c.execute("select title, message_count, estimated_cost_usd from sessions where started_at>=? and started_at<? and title is not null",
+                                        (a.timestamp(), b.timestamp())):
+            out["hermes"].append(f"{title} ({n} messages)")
+    except Exception: pass
+    for f in glob.glob(f"{H}/.hermes/skills/**/SKILL.md", recursive=True):
+        if a.timestamp() <= os.path.getmtime(f) < b.timestamp(): out["skills"].append(os.path.basename(os.path.dirname(f)))
+    return out
+
+
+def night(day):
+    t = traces(day)
+    raw = "\n".join(f"## {k}\n" + "\n".join(f"- {x}" for x in v) for k, v in t.items() if v) or "(no traces)"
+    prompt = (f"These are the real traces of what Moosa's AI agents (Claude Code / Hermes, OpenClaw, scripts) did on {day}. "
+              "Write a short daily note in Markdown with exactly four sections: '### Worked on', '### Learned', '### Decisions', "
+              "'### Still in progress'. One line per bullet, plain words, keep names/paths exact, at most 8 bullets per section, "
+              "say which agent where it is clear ([claude], [moosa]...). 'Learned' = durable lessons another agent should reuse. "
+              "'Decisions' only where a trace shows Moosa said yes/no or chose; otherwise write '- none recorded'. Do not invent anything that is not in the traces.\n\n" + raw)
+    body = sh([f"{H}/.local/bin/freellm"], inp=prompt, t=240) if t["docket"] or t["commits"] or t["hermes"] else ""
+    if not body or "###" not in body:
+        body = "### Worked on (raw, the summariser was unreachable)\n" + raw
+    note = f"# Agents' day: {day}\n\nWritten {dt.datetime.now():%Y-%m-%d %H:%M} by agent-log from the Docket, git and Hermes. Read the last 3 of these before starting work.\n\n{body}\n\n<details><summary>Raw traces</summary>\n\n{raw}\n\n</details>\n"
+    p = f"{LOG}/{day}.md"; tmp = p + ".tmp"; open(tmp, "w").write(note); os.replace(tmp, p)
+    print(p, len(note), "bytes")
+
+
+def brief():
+    notes = sorted(glob.glob(f"{LOG}/20*.md"))
+    if not notes: return print("no notes yet")
+    text = open(notes[-1]).read().split("<details>")[0]
+    try:
+        L = json.load(open(f"{H}/Projects/asks/ledger.json"))["asks"]
+        waiting = [i["t"] for v in L.values() for i in v.get("items", []) if i.get("s") in ("waiting", "blocked") and i.get("by") == "moosa"][:6]
+    except Exception: waiting = []
+    out = sh([f"{H}/.local/bin/freellm"], t=180, inp=(
+        "From this note of what Moosa's AI agents did yesterday, write exactly 5 short bullets for his phone: 1 what got done, "
+        "1 what is stuck, 3 top focus items for today. Plain words, under 90 characters each, no headings.\n\n" + text
+        + "\n\nWaiting on Moosa: " + "; ".join(waiting)))
+    if not out: out = "\n".join(l for l in text.splitlines() if l.startswith("- "))[:600]
+    sh([NOTIFY, "Morning brief", out[:900], "default", "reminder"]); print(out)
+
+
+def health():
+    today = dt.date.today(); miss = [str(today - dt.timedelta(days=d)) for d in range(1, 8) if not os.path.exists(f"{LOG}/{today - dt.timedelta(days=d)}.md")]
+    if miss: sh([NOTIFY, "Agent log missing", "No nightly agent note for: " + ", ".join(miss), "high", "home"])
+    print("missing:", miss or "none")
+
+
+if __name__ == "__main__":
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "night"
+    if cmd == "night": night(sys.argv[2] if len(sys.argv) > 2 else str(dt.date.today()))
+    elif cmd == "brief": brief()
+    elif cmd == "health": health()
+    else: print(__doc__)
