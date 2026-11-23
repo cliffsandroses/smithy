@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+"""phone-done "what I did": tell Moosa the agent has finished using his phone (2026-11-23, Moosa: "I need a ping somehow
+or a reminder when you're done with my phone each time"). Goes through Gate to Keystone; cat "phone" makes it sticky (stays until tapped), never ntfy.
+Run it at the end of every adb/UI session on the S25."""
+import os, sys, time
+sys.path.insert(0, os.path.expanduser("~/.local/lib"))
+from phone_alert import send
+what = " ".join(sys.argv[1:]).strip() or "Finished."
+send("Done with your phone", f"{time.strftime('%H:%M')} · {what} The phone is yours.", cat="phone", prio="high")
+print("sent")
