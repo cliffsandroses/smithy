@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""colab-qwen: ask Qwen on Colab's free GPU from the laptop, or FreeLLMAPI when Colab is down/ending.
+
+  colab-qwen "prompt"            answer on stdout (uses Colab if its heartbeat is fresh and >10 min are left)
+  colab-qwen --status            what Colab is doing (state, time left, requests served)
+
+The notebook (qwen-colab.ipynb, same folder) writes MyDrive/colab-qwen/status.json; set COLAB_STATUS to a synced copy
+of that file (e.g. via rclone/Drive desktop sync), default ~/GoogleDrive/colab-qwen/status.json.
+Every Colab request is also logged on Drive by the notebook; fallbacks are logged here: ~/.local/share/colab-qwen/log.jsonl
+"""
+import json, os, subprocess, sys, time, urllib.request
+
+ST = os.path.expanduser(os.environ.get("COLAB_STATUS", "~/GoogleDrive/colab-qwen/status.json"))
+if not os.path.exists(os.path.dirname(ST)) or not os.path.exists(ST) or time.time() - os.path.getmtime(ST) > 60:
+    # no Drive sync on this laptop: read the notebook's heartbeat through the homelab's rclone (remote "gdrive"), cached 60 s
+    import subprocess
+    try:
+        r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "192.168.10.20", "rclone", "cat", "gdrive:colab-qwen/status.json"],
+                           capture_output=True, text=True, timeout=20)
+        if r.returncode == 0 and r.stdout.strip().startswith("{"):
+            os.makedirs(os.path.dirname(ST), exist_ok=True); open(ST, "w").write(r.stdout)
+    except Exception: pass
+LOG = os.path.expanduser("~/.local/share/colab-qwen/log.jsonl")
+
+
+def colab():
+    try: s = json.load(open(ST))
+    except Exception: return None
+    fresh = time.time() - s.get("beat", 0) < 180
+    return s if fresh and s.get("state") == "up" and s.get("secs_left", 0) > 600 else None
+
+
+def ask(prompt):
+    s = colab()
+    if s:
+        req = urllib.request.Request(s["base_url"] + "/chat/completions",
+                                     json.dumps({"model": s["model"], "messages": [{"role": "user", "content": prompt}]}).encode(),
+                                     {"Authorization": "Bearer " + s["api_key"], "Content-Type": "application/json", "X-Client": "laptop:" + os.environ.get("USER", "?")})
+        try:
+            return json.load(urllib.request.urlopen(req, timeout=600))["choices"][0]["message"]["content"], "colab"
+        except Exception as e:
+            print(f"colab failed ({e}); using FreeLLMAPI", file=sys.stderr)
+    out = subprocess.run([os.path.expanduser("~/Projects/smithy/forge/tools/freellm/freellm"), prompt], capture_output=True, text=True).stdout
+    return out, "freellmapi"
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] == ["--status"]:
+        try: s = json.load(open(ST)); print(f"{s['state']} · {s['secs_left']//60} min left · {s.get('requests',0)} requests · beat {int(time.time()-s['beat'])} s ago")
+        except Exception: print("no status file at", ST)
+        sys.exit()
+    p = " ".join(sys.argv[1:]) or sys.stdin.read()
+    a, via = ask(p)
+    os.makedirs(os.path.dirname(LOG), exist_ok=True)
+    open(LOG, "a").write(json.dumps({"at": time.time(), "via": via, "prompt": p, "answer": a}) + "\n")
+    print(a)
